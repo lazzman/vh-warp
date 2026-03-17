@@ -1,7 +1,9 @@
 #!/bin/bash
 
-LOG_FILE="/var/log/warp-gost/entrypoint.log"
-mkdir -p /var/log/warp-gost
+LOG_DIR="/var/log/warp-gost"
+LOG_FILE="$LOG_DIR/entrypoint.log"
+
+mkdir -p "$LOG_DIR"
 
 log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
@@ -14,6 +16,7 @@ log "开始初始化..."
 ln -sf /usr/local/bin/vhwarp.sh /usr/bin/vhwarp
 ln -sf /usr/local/bin/setup-dns.sh /usr/bin/setup-dns
 ln -sf /usr/local/bin/gost-setup.sh /usr/bin/gost-setup
+ln -sf /usr/local/bin/log-monitor.sh /usr/bin/log-monitor
 
 if [ ! -e /dev/net/tun ]; then
     mkdir -p /dev/net
@@ -29,7 +32,7 @@ if ! pgrep -x "dbus-daemon" > /dev/null; then
 fi
 
 log "启动 warp-svc..."
-warp-svc > /var/log/warp-gost/warp-svc.log 2>&1 &
+warp-svc >> "$LOG_DIR/warp-svc.log" 2>&1 &
 WARP_PID=$!
 
 sleep 3
@@ -47,6 +50,10 @@ until warp-cli --accept-tos status > /dev/null 2>&1; do
 done
 
 log "warp-cli 已就绪"
+
+log "启动日志监控 (每5分钟检查一次)..."
+/usr/local/bin/log-monitor.sh > /dev/null 2>&1 &
+MONITOR_PID=$!
 
 echo "--------------------------------------------------------"
 echo "🚀 WARP 代理容器已启动"

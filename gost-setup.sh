@@ -43,7 +43,7 @@ start_gost() {
         sleep 1
     fi
     
-    gost -L mixed://0.0.0.0:16666 > /var/log/warp-gost/gost.log 2>&1 &
+    gost -L mixed://0.0.0.0:16666 >> /var/log/warp-gost/gost.log 2>&1 &
     sleep 1
     
     if pgrep -x "gost" > /dev/null; then
