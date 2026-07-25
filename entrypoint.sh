@@ -38,14 +38,18 @@ log "正在启动 warp-svc..."
 warp-svc >> "$LOG_DIR/warp-svc.log" 2>&1 &
 WARP_PID=$!
 
-sleep 3
-
-if kill -0 $WARP_PID 2>/dev/null; then
-    log "warp-svc 启动成功 (PID: $WARP_PID)"
-else
-    log "致命错误: warp-svc 启动失败"
-    exit 1
-fi
+attempt=1
+while true; do
+    sleep 5
+    if kill -0 $WARP_PID 2>/dev/null; then
+        log "warp-svc 启动成功 (PID: $WARP_PID, 第 ${attempt} 次尝试)"
+        break
+    fi
+    log "warp-svc 未就绪，第 ${attempt} 次尝试，5 秒后重试..."
+    attempt=$((attempt + 1))
+    warp-svc >> "$LOG_DIR/warp-svc.log" 2>&1 &
+    WARP_PID=$!
+done
 
 log "等待 warp-cli 就绪..."
 until warp-cli status > /dev/null 2>&1; do
