@@ -398,7 +398,7 @@ show_menu() {
         local pad=$((box_w - 4 - w))
         local spaces
         spaces=$(printf '%*s' "$pad" '')
-        echo "  ║  ${text}${spaces} ║"
+        echo "  |  ${text}${spaces} |"
     }
 
     draw_line() {
@@ -409,9 +409,9 @@ show_menu() {
         echo "  ${l}${line}${r}"
     }
 
-    draw_line "═" "╔" "╗"
+    draw_line "=" "+" "+"
     menu_line "vh-warp 配置工具"
-    draw_line "═" "╠" "╣"
+    draw_line "=" "+" "+"
     menu_line "1)  WARP 免费版       MASQUE 协议，无需账号"
     menu_line "2)  Teams / Zero Trust  输入 Token URL"
     menu_line "3)  WARP+ (License Key)  输入 License Key"
@@ -420,7 +420,7 @@ show_menu() {
     menu_line "6)  更新 WARP CLI"
     menu_line "7)  PushDeer 断线通知"
     menu_line "0)  退出"
-    draw_line "═" "╚" "╝"
+    draw_line "=" "+" "+"
     echo ""
 }
 

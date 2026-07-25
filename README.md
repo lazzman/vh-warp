@@ -94,17 +94,6 @@ HTTP:    192.168.x.x:1111
 
 完整重置后，每小时提醒一次（最多 3 次 ⏰）。当你重新配置好 WARP 后，会自动退出急救模式并恢复监控 🎉
 
-可配置环境变量：
-
-| 变量 | 默认 | 说明 |
-|------|:---:|------|
-| `HEALTH_CHECK_INTERVAL` | `60` | ⏱️ 检测间隔（秒） |
-| `HEALTH_SOFT_FAILURES` | `3` | 🔄 软重连触发阈值 |
-| `HEALTH_RESTART_GOST` | `6` | 🔧 重启代理触发阈值 |
-| `HEALTH_HARD_RESET` | `9` | 💥 完整重置触发阈值 |
-| `HEALTH_REMINDER_MAX` | `3` | 📢 最多提醒次数 |
-| `HEALTH_REMINDER_INTERVAL` | `3600` | ⏰ 提醒间隔（秒） |
-
 ## 🔔 PushDeer 通知
 
 进入配置菜单 **7) PushDeer Notifications** 设置 PushKey：

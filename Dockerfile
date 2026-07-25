@@ -1,3 +1,26 @@
+FROM debian:bookworm-slim AS builder
+
+ARG GITHUB_PROXY=""
+ENV DEBIAN_FRONTEND=noninteractive
+ENV GOST_VERSION=3.2.6
+
+RUN apt update && apt install -y --no-install-recommends \
+    curl wget gnupg2 ca-certificates libc-bin && \
+    curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | \
+    gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ bookworm main" \
+    > /etc/apt/sources.list.d/cloudflare-client.list && \
+    apt update && \
+    apt install cloudflare-warp -y && \
+    mkdir -p /stage && \
+    cp /usr/bin/warp-cli /usr/bin/warp-svc /stage/ && \
+    for bin in /stage/warp-cli /stage/warp-svc; do \
+    ldd "$bin" 2>/dev/null | grep -oP '/[^ ]+' | while read -r lib; do \
+    if [ -f "$lib" ]; then \
+    mkdir -p "/stage/rootfs$(dirname "$lib")" && \
+    cp -n "$lib" "/stage/rootfs$(dirname "$lib")/" 2>/dev/null || true; \
+    fi; done; done
+
 FROM debian:bookworm-slim
 
 ARG GITHUB_PROXY=""
@@ -5,24 +28,19 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV GOST_VERSION=3.2.6
 
 RUN apt update && apt install -y --no-install-recommends \
-    curl wget gnupg2 ca-certificates procps iproute2 iptables dbus bash \
-    && curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | \
-    gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ bookworm main" \
-    > /etc/apt/sources.list.d/cloudflare-client.list && \
-    apt update && \
-    apt install -y --no-install-recommends cloudflare-warp && \
-    ARCH=$(dpkg --print-architecture) && \
+    curl ca-certificates procps iproute2 iptables dbus bash \
+    && apt clean && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /stage/warp-cli /stage/warp-svc /usr/bin/
+COPY --from=builder /stage/rootfs/ /
+
+RUN ldconfig
+
+RUN ARCH=$(dpkg --print-architecture) && \
     curl -fsSL -o /tmp/gost.tar.gz \
     "${GITHUB_PROXY}https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${ARCH}.tar.gz" && \
     tar xzf /tmp/gost.tar.gz -C /usr/local/bin gost && \
     chmod +x /usr/local/bin/gost && rm /tmp/gost.tar.gz && \
-    apt purge -y wget gnupg2 && \
-    apt clean && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
-    /usr/share/doc/* /usr/share/man/* /usr/share/locale/* \
-    /var/cache/apt/* /var/cache/debconf/* \
-    /var/log/*.log /var/log/apt/* && \
     mkdir -p /var/log/warp-gost
 
 COPY entrypoint.sh vhwarp.sh gost-setup.sh log-monitor.sh health-check.sh setup-dns.sh /usr/local/bin/
@@ -36,7 +54,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
 
 RUN which warp-cli && which warp-svc && which gost && \
     echo "=== 构建验证通过 ===" && \
-    warp-cli --version && gost -V 2>&1 || true
+    warp-cli --version
 
 EXPOSE 1111
 
