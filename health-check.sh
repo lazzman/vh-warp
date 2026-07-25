@@ -116,7 +116,7 @@ do_restart_gost() {
     msg="${msg} 已连续失败 ${HEALTH_RESTART_GOST} 次，正在重启 SOCKS5/HTTP 代理服务$'\n'也许是代理层卡住了，不是 WARP 隧道的问题！"
     pushdeer_send "🔧 重启 WARP 代理层" "$msg"
 
-    pkill gost 2>/dev/null || true
+    pkill -x gost 2>/dev/null || true
     sleep 1
     gost -L "mixed://0.0.0.0:1111" >> /var/log/warp-gost/gost.log 2>&1 &
     local i=0
@@ -161,7 +161,7 @@ do_hard_reset() {
     sleep 2
     warp-cli --accept-tos registration delete > /dev/null 2>&1 || true
     sleep 2
-    pkill gost 2>/dev/null || true
+    pkill -x gost 2>/dev/null || true
 }
 
 send_reminder() {

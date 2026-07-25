@@ -254,7 +254,7 @@ reset_config() {
     warp-cli --accept-tos registration delete > /dev/null 2>&1 || true
     sleep 2
 
-    pkill gost 2>/dev/null || true
+    pkill -x gost 2>/dev/null || true
 
     echo "配置已重置"
 }

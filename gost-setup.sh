@@ -30,7 +30,7 @@ configure_nat() {
 start_gost() {
     log "启动 GOST 代理 (mixed SOCKS5+HTTP 监听 0.0.0.0:1111)..."
 
-    pkill gost 2>/dev/null || true
+    pkill -x gost 2>/dev/null || true
     sleep 1
 
     gost -L "mixed://0.0.0.0:1111" >> "$LOG_FILE" 2>&1 &
@@ -51,7 +51,7 @@ start_gost() {
 
 stop_gost() {
     log "停止 GOST..."
-    pkill gost 2>/dev/null || true
+    pkill -x gost 2>/dev/null || true
     sleep 1
     log "GOST 已停止"
 }
