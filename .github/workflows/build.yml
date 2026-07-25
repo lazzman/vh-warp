@@ -6,14 +6,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux/amd64
-            arch: amd64
-          - platform: linux/arm64
-            arch: arm64
 
     steps:
       - name: Checkout
@@ -27,7 +19,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKER_HUB_USER }}/vh-warp
+          images: uxiaohan/vh-warp
           tags: |
             type=raw,value=${{ steps.timestamp.outputs.tag }}
             type=raw,value=latest
@@ -49,9 +41,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: ${{ matrix.platform }}
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
