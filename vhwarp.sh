@@ -230,47 +230,6 @@ reset_config() {
     echo "配置已重置"
 }
 
-update_cli() {
-    echo ""
-    echo "正在更新 Cloudflare WARP CLI..."
-
-    echo "当前版本:"
-    warp-cli --version 2>/dev/null || echo "未知"
-
-    echo ""
-    read -p "检查更新并安装？(y/n): " confirm
-    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
-        echo "已取消"
-        return 0
-    fi
-
-    log "更新 cloudflare-warp..."
-    curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | \
-        gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg 2>/dev/null
-    apt update 2>/dev/null
-    apt install --only-upgrade cloudflare-warp -y 2>&1 | tee -a "$LOG_FILE"
-
-    echo ""
-    echo "更新后版本:"
-    warp-cli --version 2>/dev/null || echo "未知"
-
-    echo ""
-    if pgrep -x "warp-svc" > /dev/null; then
-        echo "正在重启 warp-svc..."
-        pkill warp-svc 2>/dev/null || true
-        sleep 2
-        warp-svc >> /var/log/warp-gost/warp-svc.log 2>&1 &
-        sleep 3
-        if pgrep -x "warp-svc" > /dev/null; then
-            echo "warp-svc 已重启"
-        else
-            echo "warp-svc 重启失败"
-        fi
-    fi
-
-    log "cloudflare-warp 更新完成"
-}
-
 pushdeer_menu() {
     local pushkey_file="/var/lib/cloudflare-warp/pushdeer.key"
 
@@ -417,8 +376,7 @@ show_menu() {
     menu_line "3)  WARP+ (License Key)  输入 License Key"
     menu_line "4)  查看当前状态"
     menu_line "5)  重置并清理配置"
-    menu_line "6)  更新 WARP CLI"
-    menu_line "7)  PushDeer 断线通知"
+    menu_line "6)  PushDeer 断线通知"
     menu_line "0)  退出"
     draw_line "=" "+" "+"
     echo ""
@@ -427,7 +385,7 @@ show_menu() {
 main() {
     while true; do
         show_menu
-        read -p "  请选择 [0-7]: " choice
+        read -p "  请选择 [0-6]: " choice
 
         case $choice in
             1) configure_free ;;
@@ -435,8 +393,7 @@ main() {
             3) configure_plus ;;
             4) show_status ;;
             5) reset_config ;;
-            6) update_cli ;;
-            7) pushdeer_menu ;;
+            6) pushdeer_menu ;;
             0)
                 echo "再见！"
                 exit 0

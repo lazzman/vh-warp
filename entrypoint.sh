@@ -57,6 +57,14 @@ until warp-cli --accept-tos status > /dev/null 2>&1; do
 done
 log "warp-cli 已就绪"
 
+log "检测 WARP 注册状态..."
+if warp-cli --accept-tos status 2>/dev/null | grep -q "Connected"; then
+    log "WARP 已连接，自动启动 GOST 代理..."
+    /usr/local/bin/gost-setup.sh start
+else
+    log "WARP 未配置，请运行 vhwarp 进行配置"
+fi
+
 log "正在启动日志监控..."
 /usr/local/bin/log-monitor.sh > /dev/null 2>&1 &
 
