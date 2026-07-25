@@ -29,14 +29,15 @@ ARG GITHUB_PROXY=""
 ENV DEBIAN_FRONTEND=noninteractive
 ENV GOST_VERSION=3.2.6
 
-RUN apt update && apt install -y --no-install-recommends \
-    curl ca-certificates procps iproute2 iptables dbus bash dnsutils net-tools \
+RUN     apt update && apt install -y --no-install-recommends \
+    curl ca-certificates procps iproute2 iptables dbus bash dnsutils net-tools libcap2-bin \
     && apt clean && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /stage/warp-cli /stage/warp-svc /usr/bin/
 COPY --from=builder /stage/rootfs/ /
 
-RUN ldconfig
+RUN ldconfig && \
+    setcap cap_setuid,cap_setgid,cap_net_raw,cap_dac_read_search,cap_net_admin,cap_net_bind_service,cap_sys_ptrace+ei /usr/bin/warp-svc
 
 RUN ARCH=$(dpkg --print-architecture) && \
     curl -fsSL -o /tmp/gost.tar.gz \

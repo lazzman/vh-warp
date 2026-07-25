@@ -35,6 +35,7 @@ if ! pgrep -x "dbus-daemon" > /dev/null 2>&1; then
 fi
 
 log "正在启动 warp-svc..."
+mkdir -p /run/cloudflare-warp
 warp-svc >> "$LOG_DIR/warp-svc.log" 2>&1 &
 WARP_PID=$!
 
