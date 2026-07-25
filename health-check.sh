@@ -119,7 +119,15 @@ do_restart_gost() {
     pkill gost 2>/dev/null || true
     sleep 1
     gost -L "mixed://0.0.0.0:1111" >> /var/log/warp-gost/gost.log 2>&1 &
-    sleep 3
+    local i=0
+    while [ $i -lt 10 ]; do
+        sleep 1
+        if pgrep -x "gost" > /dev/null; then
+            log "gost 重启成功"
+            break
+        fi
+        i=$((i + 1))
+    done
 }
 
 do_hard_reset() {

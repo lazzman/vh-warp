@@ -34,16 +34,19 @@ start_gost() {
     sleep 1
 
     gost -L "mixed://0.0.0.0:1111" >> "$LOG_FILE" 2>&1 &
-    sleep 1
 
-    if pgrep -x "gost" > /dev/null; then
-        log "GOST 启动成功，端口: 1111"
-        configure_nat || true
-        return 0
-    else
-        log "GOST 启动失败"
-        return 1
-    fi
+    local i=0
+    while [ $i -lt 10 ]; do
+        sleep 1
+        if pgrep -x "gost" > /dev/null; then
+            log "GOST 启动成功，端口: 1111"
+            configure_nat || true
+            return 0
+        fi
+        i=$((i + 1))
+    done
+
+    log "GOST 启动失败"
 }
 
 stop_gost() {
