@@ -53,7 +53,7 @@ get_fail_count() {
 }
 
 check_connected() {
-    if warp-cli status 2>/dev/null | grep -q "Connected"; then
+    if warp-cli --accept-tos status 2>/dev/null | grep -q "Connected"; then
         return 0
     fi
     return 1
@@ -62,7 +62,7 @@ check_connected() {
 check_proxy() {
     local result
     result=$(curl -s --max-time 10 --socks5 127.0.0.1:1111 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
-    if echo "$result" | grep -q "warp=on"; then
+    if echo "$result" | grep -qE "warp=(on|plus)"; then
         return 0
     fi
     return 1
@@ -103,9 +103,9 @@ do_soft_reconnect() {
     msg="${msg} 已经连续失败了 ${HEALTH_SOFT_FAILURES} 次，执行 disconnect → connect $'\n'如果这一针下去还不行的话，我可要上大家伙了！"
     pushdeer_send "💉 WARP 急救中" "$msg"
 
-    warp-cli disconnect > /dev/null 2>&1 || true
+    warp-cli --accept-tos disconnect > /dev/null 2>&1 || true
     sleep 3
-    warp-cli connect > /dev/null 2>&1 || true
+    warp-cli --accept-tos connect > /dev/null 2>&1 || true
     sleep 5
 }
 
@@ -125,7 +125,7 @@ do_restart_gost() {
 do_hard_reset() {
     log "完整重置: 删除注册信息"
     local reg_info
-    reg_info=$(warp-cli registration show 2>/dev/null)
+    reg_info=$(warp-cli --accept-tos registration show 2>/dev/null)
     local account_type="WARP"
     if echo "$reg_info" | grep -q "Organization"; then
         account_type="Teams"
@@ -149,9 +149,9 @@ do_hard_reset() {
 
     pushdeer_send "🚨 SOS！WARP 离线！" "$msg"
 
-    warp-cli disconnect > /dev/null 2>&1 || true
+    warp-cli --accept-tos disconnect > /dev/null 2>&1 || true
     sleep 2
-    warp-cli registration delete > /dev/null 2>&1 || true
+    warp-cli --accept-tos registration delete > /dev/null 2>&1 || true
     sleep 2
     pkill gost 2>/dev/null || true
 }
@@ -159,7 +159,7 @@ do_hard_reset() {
 send_reminder() {
     local count="$1"
     local reg_info
-    reg_info=$(warp-cli registration show 2>/dev/null 2>/dev/null)
+    reg_info=$(warp-cli --accept-tos registration show 2>/dev/null 2>/dev/null)
     local account_type="WARP"
     if echo "$reg_info" 2>/dev/null | grep -q "Organization"; then
         account_type="Teams"

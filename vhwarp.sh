@@ -20,7 +20,7 @@ wait_for_connected() {
     local count=0
     while [ $count -lt $max_attempts ]; do
         local status
-        status=$(warp-cli status 2>/dev/null)
+        status=$(warp-cli --accept-tos status 2>/dev/null)
         echo "$status" >> "$LOG_FILE"
         if echo "$status" | grep -q "Connected" 2>/dev/null; then
             return 0
@@ -34,8 +34,8 @@ wait_for_connected() {
 
 clean_config() {
     log "清理旧配置..."
-    warp-cli disconnect > /dev/null 2>&1 || true
-    warp-cli registration delete > /dev/null 2>&1 || true
+    warp-cli --accept-tos disconnect > /dev/null 2>&1 || true
+    warp-cli --accept-tos registration delete > /dev/null 2>&1 || true
     sleep 1
 }
 
@@ -51,13 +51,13 @@ configure_free() {
     clean_config
     log "开始配置 WARP Free"
 
-    warp-cli registration new > /dev/null 2>&1
+    warp-cli --accept-tos registration new > /dev/null 2>&1
     sleep 2
 
-    warp-cli tunnel protocol set MASQUE > /dev/null 2>&1
+    warp-cli --accept-tos tunnel protocol set MASQUE > /dev/null 2>&1
     sleep 1
 
-    warp-cli connect > /dev/null 2>&1
+    warp-cli --accept-tos connect > /dev/null 2>&1
     echo -n "正在连接（最长等待 3 分钟）..."
     if wait_for_connected 60; then
         echo ""
@@ -100,10 +100,10 @@ configure_teams() {
     log "开始配置 Teams"
 
     echo "正在注册 Teams Token..."
-    warp-cli registration token "$token_url" > /dev/null 2>&1
+    warp-cli --accept-tos registration token "$token_url" > /dev/null 2>&1
     sleep 3
 
-    warp-cli connect > /dev/null 2>&1
+    warp-cli --accept-tos connect > /dev/null 2>&1
     echo -n "正在连接（最长等待 5 分钟）..."
     if wait_for_connected 100; then
         echo ""
@@ -123,7 +123,7 @@ configure_teams() {
         echo "Teams 连接失败"
         echo ""
         echo "当前状态:"
-        warp-cli status
+        warp-cli --accept-tos status
         echo ""
         echo "日志: $LOG_FILE"
         log "Teams 连接失败"
@@ -149,13 +149,13 @@ configure_plus() {
     clean_config
     log "开始配置 WARP+: $license_key"
 
-    warp-cli registration new > /dev/null 2>&1
+    warp-cli --accept-tos registration new > /dev/null 2>&1
     sleep 2
 
-    warp-cli registration license "$license_key"
+    warp-cli --accept-tos registration license "$license_key"
     sleep 2
 
-    warp-cli connect > /dev/null 2>&1
+    warp-cli --accept-tos connect > /dev/null 2>&1
     echo -n "正在连接（最长等待 3 分钟）..."
     if wait_for_connected 60; then
         echo ""
@@ -183,10 +183,10 @@ show_status() {
     echo "========================================"
     echo "  当前状态"
     echo "========================================"
-    warp-cli status
+    warp-cli --accept-tos status
     echo ""
     local reg_info
-    reg_info=$(warp-cli registration show 2>/dev/null)
+    reg_info=$(warp-cli --accept-tos registration show 2>/dev/null)
     if echo "$reg_info" | grep -q "Organization"; then
         echo "账户类型: Teams (Zero Trust)"
     elif echo "$reg_info" | grep -q "Premium"; then
@@ -220,9 +220,9 @@ reset_config() {
     fi
 
     log "重置配置"
-    warp-cli disconnect > /dev/null 2>&1 || true
+    warp-cli --accept-tos disconnect > /dev/null 2>&1 || true
     sleep 2
-    warp-cli registration delete > /dev/null 2>&1 || true
+    warp-cli --accept-tos registration delete > /dev/null 2>&1 || true
     sleep 2
 
     pkill gost 2>/dev/null || true
@@ -379,20 +379,49 @@ show_banner() {
     echo ""
 }
 
+str_visual_width() {
+    echo -n "$1" | python3 -c "
+import sys
+t = sys.stdin.read()
+w = sum(2 if ord(c) > 0x2E80 else 1 for c in t)
+print(w)
+"
+}
+
 show_menu() {
     show_banner
-    echo "  ╔══════════════════════════════════════════════╗"
-    echo "  ║              vh-warp 配置工具                ║"
-    echo "  ╠══════════════════════════════════════════════╣"
-    echo "  ║  1)  WARP 免费版       MASQUE 协议，无需账号  ║"
-    echo "  ║  2)  Teams / Zero Trust  输入 Token URL       ║"
-    echo "  ║  3)  WARP+ (License Key)  输入 License Key    ║"
-    echo "  ║  4)  查看当前状态                             ║"
-    echo "  ║  5)  重置并清理配置                           ║"
-    echo "  ║  6)  更新 WARP CLI                            ║"
-    echo "  ║  7)  PushDeer 断线通知                        ║"
-    echo "  ║  0)  退出                                    ║"
-    echo "  ╚══════════════════════════════════════════════╝"
+    local box_w=48
+
+    menu_line() {
+        local text="$1"
+        local w
+        w=$(str_visual_width "$text")
+        local pad=$((box_w - 4 - w))
+        local spaces
+        spaces=$(printf '%*s' "$pad" '')
+        echo "  ║  ${text}${spaces} ║"
+    }
+
+    draw_line() {
+        local c="$1" l="$2" r="$3"
+        local n=$((box_w - 3))
+        local line
+        line=$(printf '%*s' "$n" '' | tr ' ' "$c")
+        echo "  ${l}${line}${r}"
+    }
+
+    draw_line "═" "╔" "╗"
+    menu_line "vh-warp 配置工具"
+    draw_line "═" "╠" "╣"
+    menu_line "1)  WARP 免费版       MASQUE 协议，无需账号"
+    menu_line "2)  Teams / Zero Trust  输入 Token URL"
+    menu_line "3)  WARP+ (License Key)  输入 License Key"
+    menu_line "4)  查看当前状态"
+    menu_line "5)  重置并清理配置"
+    menu_line "6)  更新 WARP CLI"
+    menu_line "7)  PushDeer 断线通知"
+    menu_line "0)  退出"
+    draw_line "═" "╚" "╝"
     echo ""
 }
 

@@ -52,7 +52,7 @@ while true; do
 done
 
 log "等待 warp-cli 就绪..."
-until warp-cli status > /dev/null 2>&1; do
+until warp-cli --accept-tos status > /dev/null 2>&1; do
     sleep 1
 done
 log "warp-cli 已就绪"

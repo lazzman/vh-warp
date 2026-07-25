@@ -21,7 +21,7 @@ RUN curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | \
     echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ bookworm main" \
     > /etc/apt/sources.list.d/cloudflare-client.list && \
     apt update && \
-    apt install cloudflare-warp -y && \
+    apt install -y --no-install-recommends cloudflare-warp && \
     apt clean && rm -rf /var/lib/apt/lists/*
 
 RUN ARCH=$(dpkg --print-architecture) && \
