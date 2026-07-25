@@ -30,7 +30,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV GOST_VERSION=3.2.6
 
 RUN     apt update && apt install -y --no-install-recommends \
-    curl ca-certificates procps iproute2 iptables dbus bash dnsutils net-tools libcap2-bin \
+    curl ca-certificates procps iproute2 iptables dbus bash dnsutils net-tools libcap2-bin nftables libpcap0.8 \
     && apt clean && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /stage/warp-cli /stage/warp-svc /usr/bin/
