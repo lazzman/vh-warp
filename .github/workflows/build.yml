@@ -19,6 +19,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Generate timestamp tag
+        id: timestamp
+        run: echo "tag=$(TZ='Asia/Shanghai' date +'%Y.%m.%d_%H.%M')" >> $GITHUB_OUTPUT
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/vh-warp
+          tags: |
+            type=raw,value=${{ steps.timestamp.outputs.tag }}
+            type=raw,value=latest
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -31,13 +44,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Generate timestamp tag
-        id: tags
-        run: |
-          TS=$(TZ="Asia/Shanghai" date +'%Y.%m.%d_%H.%M')
-          echo "ts=${TS}" >> $GITHUB_OUTPUT
-          echo "platform=${{ matrix.platform }}" >> $GITHUB_OUTPUT
-
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -45,6 +51,7 @@ jobs:
           file: ./Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/vh-warp:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/vh-warp:${{ steps.tags.outputs.ts }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
