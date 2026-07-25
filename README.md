@@ -54,20 +54,19 @@ docker exec -it vh-warp vhwarp
     ☁️  Cloudflare WARP 隐私保护 · 网络加速
   ─────────────────────────────────────────────────────────
 
-  ╔══════════════════════════════════════════════╗
-  ║              vh-warp 配置工具                ║
-  ╠══════════════════════════════════════════════╣
-  ║  1)  WARP 免费版       MASQUE 协议，无需账号  ║
-  ║  2)  Teams / Zero Trust  输入 Token URL       ║
-  ║  3)  WARP+ (License Key)  输入 License Key    ║
-  ║  4)  查看当前状态                             ║
-  ║  5)  重置并清理配置                           ║
-  ║  6)  更新 WARP CLI                            ║
-  ║  7)  PushDeer 断线通知                        ║
-  ║  0)  退出                                    ║
-  ╚══════════════════════════════════════════════╝
+  +==============================================+
+  |              vh-warp 配置工具                |
+  +==============================================+
+  |  1)  WARP 免费版       MASQUE 协议，无需账号  |
+  |  2)  Teams / Zero Trust  输入 Token URL       |
+  |  3)  WARP+ (License Key)  输入 License Key    |
+  |  4)  查看当前状态                             |
+  |  5)  重置并清理配置                           |
+  |  6)  PushDeer 断线通知                        |
+  |  0)  退出                                    |
+  +==============================================+
 
-  请选择 [0-7]:
+  请选择 [0-6]:
 ```
 
 ## 🌐 使用代理
@@ -96,7 +95,7 @@ HTTP:    192.168.x.x:1111
 
 ## 🔔 PushDeer 通知
 
-进入配置菜单 **7) PushDeer Notifications** 设置 PushKey：
+进入配置菜单 **6) PushDeer 断线通知** 设置 PushKey：
 
 1. 📲 安装 [PushDeer App](https://www.pushdeer.com/)
 2. 🔑 在 App 中获取 PushKey
@@ -127,9 +126,14 @@ docker exec -it vh-warp tail -f /var/log/warp-gost/health-check.log
 docker run -d \
   --name vh-warp \
   --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
   --cap-add=SYS_MODULE \
+  --cap-add=MKNOD \
+  --device-cgroup-rule="c 10:200 rwm" \
   -p 1111:1111 \
   --sysctl net.ipv4.conf.all.src_valid_mark=1 \
+  --sysctl net.ipv4.ip_forward=1 \
+  --sysctl net.core.somaxconn=65535 \
   -v warp-data:/var/lib/cloudflare-warp \
   uxiaohan/vh-warp:latest
 ```

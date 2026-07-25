@@ -1,4 +1,4 @@
-FROM debian:bookworm-slim AS builder
+FROM debian:bookworm-slim
 
 ARG GITHUB_PROXY=""
 ENV DEBIAN_FRONTEND=noninteractive
@@ -12,33 +12,10 @@ RUN apt update && apt install -y --no-install-recommends \
     > /etc/apt/sources.list.d/cloudflare-client.list && \
     apt update && \
     apt install cloudflare-warp -y && \
-    mkdir -p /stage && \
-    cp /usr/bin/warp-cli /usr/bin/warp-svc /stage/ && \
-    for bin in /stage/warp-cli /stage/warp-svc; do \
-    ldd "$bin" 2>/dev/null | grep -oP '/[^ ]+' | while read -r lib; do \
-    real=$(readlink -f "$lib" 2>/dev/null) && lib="$real"; \
-    if [ -f "$lib" ]; then \
-    mkdir -p "/stage/rootfs$(dirname "$lib")" && \
-    cp -n "$lib" "/stage/rootfs$(dirname "$lib")/" 2>/dev/null || true; \
-    fi; done; done && \
-    cp -a /etc/dbus-1/. /stage/rootfs/etc/dbus-1/ 2>/dev/null || true
-
-FROM debian:bookworm-slim
-
-ARG GITHUB_PROXY=""
-ENV DEBIAN_FRONTEND=noninteractive
-ENV GOST_VERSION=3.2.6
-
-RUN apt update && apt install -y --no-install-recommends \
-    curl ca-certificates procps iproute2 iptables dbus bash dnsutils net-tools \
-    && apt clean && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /stage/warp-cli /stage/warp-svc /usr/bin/
-COPY --from=builder /stage/rootfs/ /
-
-RUN ldconfig
-
-RUN ARCH=$(dpkg --print-architecture) && \
+    apt install -y --no-install-recommends \
+    procps iproute2 iptables dbus dnsutils net-tools && \
+    apt clean && rm -rf /var/lib/apt/lists/* && \
+    ARCH=$(dpkg --print-architecture) && \
     curl -fsSL -o /tmp/gost.tar.gz \
     "${GITHUB_PROXY}https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${ARCH}.tar.gz" && \
     tar xzf /tmp/gost.tar.gz -C /usr/local/bin gost && \
