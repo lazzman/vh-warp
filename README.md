@@ -69,6 +69,8 @@ docker exec -it vh-warp vhwarp
   请选择 [0-6]:
 ```
 
+![proxy](proxy.png)
+
 ## 🌐 使用代理
 
 局域网设备配置代理地址即可：
