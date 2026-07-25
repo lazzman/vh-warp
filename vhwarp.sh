@@ -32,6 +32,18 @@ wait_for_connected() {
     return 1
 }
 
+wait_for_registration() {
+    local i=0
+    while [ $i -lt 30 ]; do
+        if warp-cli --accept-tos registration show 2>/dev/null | grep -q "Device ID"; then
+            return 0
+        fi
+        sleep 2
+        i=$((i + 1))
+    done
+    return 1
+}
+
 clean_config() {
     log "清理旧配置..."
     warp-cli --accept-tos disconnect > /dev/null 2>&1 || true
@@ -51,10 +63,17 @@ configure_free() {
     clean_config
     log "开始配置 WARP Free"
 
-    warp-cli --accept-tos registration new > /dev/null 2>&1
+    warp-cli --accept-tos tunnel protocol set MASQUE > /dev/null 2>&1
     sleep 2
 
-    warp-cli --accept-tos tunnel protocol set MASQUE > /dev/null 2>&1
+    warp-cli --accept-tos registration new > /dev/null 2>&1
+    if ! wait_for_registration; then
+        echo "注册失败"
+        log "WARP Free 注册失败"
+        return 1
+    fi
+
+    warp-cli --accept-tos mode warp+doh > /dev/null 2>&1
     sleep 1
 
     warp-cli --accept-tos connect > /dev/null 2>&1
@@ -103,6 +122,9 @@ configure_teams() {
     warp-cli --accept-tos registration token "$token_url" > /dev/null 2>&1
     sleep 3
 
+    warp-cli --accept-tos mode warp+doh > /dev/null 2>&1
+    sleep 1
+
     warp-cli --accept-tos connect > /dev/null 2>&1
     echo -n "正在连接（最长等待 5 分钟）..."
     if wait_for_connected 100; then
@@ -150,10 +172,17 @@ configure_plus() {
     log "开始配置 WARP+: $license_key"
 
     warp-cli --accept-tos registration new > /dev/null 2>&1
-    sleep 2
+    if ! wait_for_registration; then
+        echo "注册失败"
+        log "WARP+ 注册失败"
+        return 1
+    fi
 
     warp-cli --accept-tos registration license "$license_key"
     sleep 2
+
+    warp-cli --accept-tos mode warp+doh > /dev/null 2>&1
+    sleep 1
 
     warp-cli --accept-tos connect > /dev/null 2>&1
     echo -n "正在连接（最长等待 3 分钟）..."

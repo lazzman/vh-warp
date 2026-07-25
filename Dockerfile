@@ -20,7 +20,8 @@ RUN apt update && apt install -y --no-install-recommends \
     if [ -f "$lib" ]; then \
     mkdir -p "/stage/rootfs$(dirname "$lib")" && \
     cp -n "$lib" "/stage/rootfs$(dirname "$lib")/" 2>/dev/null || true; \
-    fi; done; done
+    fi; done; done && \
+    cp -a /etc/dbus-1/. /stage/rootfs/etc/dbus-1/ 2>/dev/null || true
 
 FROM debian:bookworm-slim
 
@@ -29,7 +30,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV GOST_VERSION=3.2.6
 
 RUN apt update && apt install -y --no-install-recommends \
-    curl ca-certificates procps iproute2 iptables dbus bash \
+    curl ca-certificates procps iproute2 iptables dbus bash dnsutils net-tools \
     && apt clean && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /stage/warp-cli /stage/warp-svc /usr/bin/
