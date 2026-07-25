@@ -18,7 +18,6 @@ RUN apt update && apt install -y --no-install-recommends \
     tar xzf /tmp/gost.tar.gz -C /usr/local/bin gost && \
     chmod +x /usr/local/bin/gost && rm /tmp/gost.tar.gz && \
     apt purge -y wget gnupg2 && \
-    apt autoremove -y --purge && \
     apt clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
     /usr/share/doc/* /usr/share/man/* /usr/share/locale/* \
