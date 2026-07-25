@@ -14,18 +14,16 @@ RUN apt update && apt install -y --no-install-recommends \
     iptables \
     dbus \
     bash \
-    && curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | \
+    && apt clean && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | \
     gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
     echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ bookworm main" \
     > /etc/apt/sources.list.d/cloudflare-client.list && \
     apt update && \
-    apt install -y --no-install-recommends cloudflare-warp && \
+    apt install -y cloudflare-warp && \
     apt autoremove -y --purge wget gnupg2 && \
-    apt clean && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
-    /usr/share/doc/* /usr/share/man/* /usr/share/locale/* \
-    /var/cache/apt/* /var/cache/debconf/* \
-    /var/log/*.log /var/log/apt/*
+    apt clean && rm -rf /var/lib/apt/lists/*
 
 RUN ARCH=$(dpkg --print-architecture) && \
     curl -fsSL -o /tmp/gost.tar.gz \
@@ -44,6 +42,10 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
     /usr/local/bin/log-monitor.sh \
     /usr/local/bin/health-check.sh \
     /usr/local/bin/setup-dns.sh
+
+RUN which warp-cli && which warp-svc && which gost && \
+    echo "=== 构建验证通过 ===" && \
+    warp-cli --version && gost -V 2>&1 || true
 
 EXPOSE 1111
 
