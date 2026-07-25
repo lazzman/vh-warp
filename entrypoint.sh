@@ -40,12 +40,12 @@ WARP_PID=$!
 
 attempt=1
 while true; do
-    sleep 5
+    sleep 10
     if kill -0 $WARP_PID 2>/dev/null; then
         log "warp-svc 启动成功 (PID: $WARP_PID, 第 ${attempt} 次尝试)"
         break
     fi
-    log "warp-svc 未就绪，第 ${attempt} 次尝试，5 秒后重试..."
+    log "warp-svc 未就绪，第 ${attempt} 次尝试，10 秒后重试..."
     attempt=$((attempt + 1))
     warp-svc >> "$LOG_DIR/warp-svc.log" 2>&1 &
     WARP_PID=$!
