@@ -380,12 +380,11 @@ show_banner() {
 }
 
 str_visual_width() {
-    echo -n "$1" | python3 -c "
-import sys
-t = sys.stdin.read()
-w = sum(2 if ord(c) > 0x2E80 else 1 for c in t)
-print(w)
-"
+    local str="$1"
+    local chars=${#str}
+    local bytes
+    bytes=$(echo -n "$str" | wc -c)
+    echo $(((chars + bytes) / 2))
 }
 
 show_menu() {
