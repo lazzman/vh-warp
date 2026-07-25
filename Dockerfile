@@ -1,46 +1,54 @@
 FROM debian:bookworm-slim
 
-LABEL maintainer="Han <www.vvhan.com>"
-
-ENV DEBIAN_FRONTEND=noninteractive TZ=Asia/Shanghai PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ARG GITHUB_PROXY=""
+ENV DEBIAN_FRONTEND=noninteractive
+ENV GOST_VERSION=3.2.6
 
 RUN apt update && apt install -y --no-install-recommends \
-    wget \
     curl \
+    wget \
     gnupg2 \
     ca-certificates \
     procps \
     iproute2 \
-    dbus \
     iptables \
-    net-tools \
-    dnsutils \
+    dbus \
     bash \
     && apt clean \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ bookworm main" | tee /etc/apt/sources.list.d/cloudflare-client.list && \
+RUN curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | \
+    gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ bookworm main" \
+    > /etc/apt/sources.list.d/cloudflare-client.list && \
     apt update && \
     apt install -y cloudflare-warp && \
     apt clean && \
     rm -rf /var/lib/apt/lists/*
 
-ENV GOST_VERSION=3.2.6
 RUN ARCH=$(dpkg --print-architecture) && \
-    curl -L "https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${ARCH}.tar.gz" | tar xz -C /usr/local/bin && \
-    chmod +x /usr/local/bin/gost
+    curl -fsSL -o /tmp/gost.tar.gz \
+    "${GITHUB_PROXY}https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_${ARCH}.tar.gz" && \
+    tar xzf /tmp/gost.tar.gz -C /usr/local/bin gost && \
+    chmod +x /usr/local/bin/gost && \
+    rm /tmp/gost.tar.gz
 
 RUN mkdir -p /var/log/warp-gost
 
 COPY entrypoint.sh /usr/local/bin/
 COPY vhwarp.sh /usr/local/bin/
-COPY setup-dns.sh /usr/local/bin/
 COPY gost-setup.sh /usr/local/bin/
 COPY log-monitor.sh /usr/local/bin/
+COPY health-check.sh /usr/local/bin/
+COPY setup-dns.sh /usr/local/bin/
 
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/vhwarp.sh /usr/local/bin/setup-dns.sh /usr/local/bin/gost-setup.sh /usr/local/bin/log-monitor.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh \
+    /usr/local/bin/vhwarp.sh \
+    /usr/local/bin/gost-setup.sh \
+    /usr/local/bin/log-monitor.sh \
+    /usr/local/bin/health-check.sh \
+    /usr/local/bin/setup-dns.sh
 
-EXPOSE 16666
+EXPOSE 1111
 
 CMD ["/usr/local/bin/entrypoint.sh"]

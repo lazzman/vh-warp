@@ -1,6 +1,9 @@
 services:
   vh-warp:
-    image: uxiaohan/vh-warp:latest
+    build:
+      context: .
+      args:
+        - GITHUB_PROXY=${GITHUB_PROXY:-}
     container_name: vh-warp
     restart: unless-stopped
     ports:

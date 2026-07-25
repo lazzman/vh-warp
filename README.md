@@ -1,123 +1,180 @@
-# vh-warp
+# 🥝 vh-warp
 
-🥝 轻量级 Docker 镜像封装 Cloudflare WARP，快速搭建局域网可访问的代理服务，极简部署、极致性能、极其稳定。
+> 基于 Cloudflare WARP 的轻量级 Docker 镜像，一键部署隐私保护 + 网络加速服务，支持 Free / Plus / Teams 全账号类型。
 
-## 特性
-- 🚀 一键部署：Docker 化封装，无需复杂配置，快速启动 WARP 代理
-- 🌐 局域网共享：代理服务暴露至局域网，多设备共用 WARP 网络
-- 📝 日志整洁：WARP 日志隔离存储，Docker 日志无冗余输出
-- 📦 日志可控：自动轮转+大小限制，避免日志文件占用过多空间
-- 💻 多架构适配：支持 amd64/arm64（服务器/软路由/树莓派均适用）
-- 🔑 账号管理：支持 WARP 免费版、WARP+、Teams (Zero Trust) 账号配置
-- 🎯 交互配置：内置 vhwarp 配置工具，菜单式操作，简单易用
+[![Docker Pulls](https://img.shields.io/docker/pulls/uxiaohan/vh-warp)](https://hub.docker.com/r/uxiaohan/vh-warp)
 
-## 快速开始
+## ✨ 特性
 
-### 构建镜像
+- 🚀 **一键部署** — Docker Compose 一行命令启动，零配置上手
+- 🔒 **隐私保护** — Cloudflare WARP 加密隧道，隐藏真实 IP，防止追踪
+- ⚡ **网络加速** — WARP 全球边缘网络，降低延迟，提升连接体验
+- 🔄 **双协议代理** — Mixed SOCKS5 + HTTP，单端口 1111 自动识别协议
+- 👤 **多账号支持** — WARP Free / WARP+ (License Key) / Teams (Zero Trust)
+- 💓 **断线自愈** — 内置心跳检测，四级渐进式自动恢复链路
+- 🔔 **即时通知** — 可选 PushDeer 推送，断线、恢复、急救实时报信
+- 🎮 **交互菜单** — `vhwarp` 配置工具，全菜单操作，新手友好
+- 🖥️ **多架构适配** — amd64 / arm64，服务器、软路由、树莓派均可运行
+- 📏 **日志可控** — 自动轮转保留最新 3MB，适合低内存环境
 
-```sh
+## 🚀 快速开始
+
+### 🐳 直接拉取（推荐）
+
+```bash
+# 下载 docker-compose.yml
+wget https://raw.githubusercontent.com/uxiaohan/vh-warp/main/docker-compose.yml
+# 启动
+docker compose up -d
+```
+
+### 🔨 本地构建
+
+```bash
 git clone https://github.com/uxiaohan/vh-warp.git
 cd vh-warp
-docker buildx build --no-cache -t vh-warp:latest .
+docker compose -f docker-compose.build.yml build
+docker compose -f docker-compose.build.yml up -d
 ```
 
-### 启动容器
+## ⚙️ 配置
 
-**Docker Compose**
-
-```sh
-version: '3.8'
-
-services:
-  vh-warp:
-    image: uxiaohan/vh-warp:latest
-    container_name: vh-warp
-    restart: unless-stopped
-    cap_add:
-      - NET_ADMIN
-      - NET_RAW
-      - MKNOD
-    device_cgroup_rules:
-      - "c 10:200 rwm"
-    ports:
-      - "16666:16666"
-    sysctls:
-      net.core.somaxconn: "65535"
-      net.ipv4.conf.all.src_valid_mark: "1"
-      net.ipv4.ip_forward: "1"
+```bash
+docker exec -it vh-warp vhwarp
 ```
 
-**Docker 命令**
+```
+  ██╗   ██╗██╗  ██╗       ██╗    ██╗ █████╗ ██████╗ ██████╗
+  ██║   ██║██║  ██║       ██║    ██║██╔══██╗██╔══██╗██╔══██╗
+  ██║   ██║███████║       ██║ █╗ ██║███████║██████╔╝██████╔╝
+  ╚██╗ ██╔╝██╔══██║       ██║███╗██║██╔══██║██╔══██╗██╔═══╝
+   ╚████╔╝ ██║  ██║       ╚███╔███╔╝██║  ██║██║  ██║██║
+    ╚═══╝  ╚═╝  ╚═╝        ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝
+  ─────────────────────────────────────────────────────────
+    ☁️  Cloudflare WARP 隐私保护 · 网络加速
+  ─────────────────────────────────────────────────────────
 
-```sh
+  ╔══════════════════════════════════════════════╗
+  ║              vh-warp 配置工具                ║
+  ╠══════════════════════════════════════════════╣
+  ║  1)  WARP 免费版       MASQUE 协议，无需账号  ║
+  ║  2)  Teams / Zero Trust  输入 Token URL       ║
+  ║  3)  WARP+ (License Key)  输入 License Key    ║
+  ║  4)  查看当前状态                             ║
+  ║  5)  重置并清理配置                           ║
+  ║  6)  更新 WARP CLI                            ║
+  ║  7)  PushDeer 断线通知                        ║
+  ║  0)  退出                                    ║
+  ╚══════════════════════════════════════════════╝
+
+  请选择 [0-7]:
+```
+
+## 🌐 使用代理
+
+局域网设备配置代理地址即可：
+
+```
+SOCKS5:  192.168.x.x:1111
+HTTP:    192.168.x.x:1111
+```
+
+> 端口 1111 为 Mixed 模式，同一端口同时支持 HTTP 和 SOCKS5，客户端无需区分协议类型。
+
+## 💓 心跳检测与自愈
+
+容器内置断线自愈守护进程，后台持续检测 `warp=on`，自动化恢复整条链路：
+
+| 🔁 连续失败 | 🛠️ 动作 | 📢 PushDeer 通知 |
+|:---:|------|------|
+| 1 | 📝 记录日志 | 🟡 "WARP 打了个盹..." |
+| 3 | 🔄 软重连 `disconnect → connect` | 💉 "正在给 WARP 做心肺复苏..." |
+| 6 | 🔧 重启 SOCKS5/HTTP 代理层 | 🟠 "重启 WARP 代理层..." |
+| 9 | 💥 完整重置 `delete → 需手工重配` | 🚨 "SOS！WARP 离线！" |
+
+完整重置后，每小时提醒一次（最多 3 次 ⏰）。当你重新配置好 WARP 后，会自动退出急救模式并恢复监控 🎉
+
+可配置环境变量：
+
+| 变量 | 默认 | 说明 |
+|------|:---:|------|
+| `HEALTH_CHECK_INTERVAL` | `60` | ⏱️ 检测间隔（秒） |
+| `HEALTH_SOFT_FAILURES` | `3` | 🔄 软重连触发阈值 |
+| `HEALTH_RESTART_GOST` | `6` | 🔧 重启代理触发阈值 |
+| `HEALTH_HARD_RESET` | `9` | 💥 完整重置触发阈值 |
+| `HEALTH_REMINDER_MAX` | `3` | 📢 最多提醒次数 |
+| `HEALTH_REMINDER_INTERVAL` | `3600` | ⏰ 提醒间隔（秒） |
+
+## 🔔 PushDeer 通知
+
+进入配置菜单 **7) PushDeer Notifications** 设置 PushKey：
+
+1. 📲 安装 [PushDeer App](https://www.pushdeer.com/)
+2. 🔑 在 App 中获取 PushKey
+3. 📝 在 vhwarp 中输入 PushKey，自动发送测试通知确认
+
+配置后，所有断线、重连、急救、恢复事件均实时推送到你手机 📱
+
+## 📋 日志
+
+日志保存在 `/var/log/warp-gost/`，单文件上限 3MB 自动截断：
+
+| 📄 文件 | 📝 内容 |
+|------|------|
+| `warp-svc.log` | Cloudflare WARP 服务日志 |
+| `gost.log` | GOST 代理服务日志 |
+| `health-check.log` | 💓 心跳检测日志 |
+| `vhwarp.log` | ⚙️ 配置工具操作日志 |
+| `entrypoint.log` | 🚀 容器启动日志 |
+
+```bash
+# 实时查看健康检测日志
+docker exec -it vh-warp tail -f /var/log/warp-gost/health-check.log
+```
+
+## 📦 Docker Run
+
+```bash
 docker run -d \
   --name vh-warp \
   --cap-add=NET_ADMIN \
-  --cap-add=NET_RAW \
-  --cap-add=MKNOD \
-  --device-cgroup-rule 'c 10:200 rwm' \
-  -p 16666:16666 \
-  --sysctl net.core.somaxconn=65535 \
+  --cap-add=SYS_MODULE \
+  -p 1111:1111 \
   --sysctl net.ipv4.conf.all.src_valid_mark=1 \
-  --sysctl net.ipv4.ip_forward=1 \
+  -v warp-data:/var/lib/cloudflare-warp \
   uxiaohan/vh-warp:latest
 ```
 
-### 配置 WARP
+## 🩺 故障排查
 
-```sh
-# 进入容器
-docker exec -it vh-warp bash
+```bash
+# 查看 WARP 连接状态
+docker exec -it vh-warp warp-cli status
 
-# 运行配置工具
-vhwarp
+# 查看心跳检测历史
+docker exec -it vh-warp cat /var/log/warp-gost/health-check.log
+
+# 重置所有配置并重新来过
+docker exec -it vh-warp vhwarp
+# → 选择 "5) 重置并清理配置"
 ```
 
-![vhwarp](vhwarp.png)
+---
 
-选择配置方式：
-1. WARP 免费版
-2. Teams (Zero Trust)
-3. WARP+ (License Key)
+## ☕ 捐赠支持
 
+如果这个项目对你有帮助，欢迎请我喝杯咖啡～
 
-### 使用代理
+![打赏](better.png)
 
-局域网内设备配置代理地址（支持 HTTP/SOCKS5 混合代理）
+> 感谢每一位 Sponsor，你的支持是我持续维护的动力 💪
 
-```
-http://容器IP:16666
-socks5://容器IP:16666
-```
+---
 
-## 日志文件
+## ⚠️ 免责声明
 
-所有日志保存在 `/var/log/warp-gost/`：
+本项目仅供学习与技术研究使用。使用者应遵守所在国家/地区的法律法规，不得将此工具用于任何非法用途。项目作者不承担任何因使用本工具而产生的法律责任。
 
-- `warp-svc.log` - WARP 服务日志
-- `gost.log` - GOST 代理日志
-- `vhwarp.log` - 配置工具日志
-- `entrypoint.log` - 启动日志
+## 📜 License
 
-查看日志：
-```sh
-docker exec -it vh-warp tail -f /var/log/warp-gost/warp-svc.log
-```
-
-### WARP 连接失败
-
-```sh
-# 进入容器
-docker exec -it vh-warp bash
-
-# 查看状态
-warp-cli --accept-tos status
-
-# 重置配置
-vhwarp
-# 选择 "5) 重置注册并清理配置"
-```
-
-### 感谢您的打赏💗
-
-![加油](better.png)
+MIT

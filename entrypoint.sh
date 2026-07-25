@@ -9,29 +9,32 @@ log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
-log "开始初始化..."
+log "vh-warp 容器启动中..."
+log "正在优化 DNS..."
+/usr/local/bin/setup-dns.sh >> "$LOG_FILE" 2>&1
 
-/usr/local/bin/setup-dns.sh
-
-ln -sf /usr/local/bin/vhwarp.sh /usr/bin/vhwarp
-ln -sf /usr/local/bin/setup-dns.sh /usr/bin/setup-dns
-ln -sf /usr/local/bin/gost-setup.sh /usr/bin/gost-setup
-ln -sf /usr/local/bin/log-monitor.sh /usr/bin/log-monitor
+ln -sf /usr/local/bin/vhwarp.sh /usr/bin/vhwarp 2>/dev/null
+ln -sf /usr/local/bin/gost-setup.sh /usr/bin/gost-setup 2>/dev/null
+ln -sf /usr/local/bin/log-monitor.sh /usr/bin/log-monitor 2>/dev/null
+ln -sf /usr/local/bin/health-check.sh /usr/bin/health-check 2>/dev/null
 
 if [ ! -e /dev/net/tun ]; then
     mkdir -p /dev/net
-    mknod /dev/net/tun c 10 200
+    mknod /dev/net/tun c 10 200 2>/dev/null || true
     chmod 600 /dev/net/tun
-    log "创建 TUN 设备"
+    log "已创建 TUN 设备 /dev/net/tun"
 fi
 
-if ! pgrep -x "dbus-daemon" > /dev/null; then
-    service dbus start
+if ! pgrep -x "dbus-daemon" > /dev/null 2>&1; then
+    dbus-daemon --system --fork 2>/dev/null || \
+    service dbus start 2>/dev/null || \
+    mkdir -p /var/run/dbus && dbus-daemon --system --fork 2>/dev/null || \
+    true
     sleep 2
-    log "启动 dbus"
+    log "dbus 已启动"
 fi
 
-log "启动 warp-svc..."
+log "正在启动 warp-svc..."
 warp-svc >> "$LOG_DIR/warp-svc.log" 2>&1 &
 WARP_PID=$!
 
@@ -40,37 +43,41 @@ sleep 3
 if kill -0 $WARP_PID 2>/dev/null; then
     log "warp-svc 启动成功 (PID: $WARP_PID)"
 else
-    log "warp-svc 启动失败"
+    log "致命错误: warp-svc 启动失败"
     exit 1
 fi
 
-until warp-cli --accept-tos status > /dev/null 2>&1; do
-    log "等待 warp-cli 就绪..."
+log "等待 warp-cli 就绪..."
+until warp-cli status > /dev/null 2>&1; do
     sleep 1
 done
-
 log "warp-cli 已就绪"
 
-log "启动日志监控 (每5分钟检查一次)..."
+log "正在启动日志监控..."
 /usr/local/bin/log-monitor.sh > /dev/null 2>&1 &
-MONITOR_PID=$!
 
-echo "--------------------------------------------------------"
-echo "🚀 WARP 代理容器已启动"
+log "正在启动健康检测..."
+/usr/local/bin/health-check.sh > /dev/null 2>&1 &
+
 echo ""
-echo "📝 下一步："
-echo "1️⃣ 进入容器终端"
-echo "2️⃣ 执行：vhwarp"
+echo "========================================"
+echo "  🥝 vh-warp Cloudflare WARP 隐私保护 + 网络加速"
 echo ""
-echo "💡 示例："
-echo "  docker exec -it warp-proxy bash"
-echo "  vhwarp"
+echo "  📝 下一步："
+echo "  1) docker exec -it vh-warp bash"
+echo "  2) vhwarp"
 echo ""
-echo "🔧 配置选项："
-echo "1️⃣ WARP 免费版"
-echo "2️⃣ Teams (Zero Trust)"
-echo "3️⃣ WARP+ (License Key)"
-echo "⚠️ 注意：配置过程中可能因为网络问题导致失败，或者等待时间较长（3分钟内），请耐心等待⌛️，失败请重试！"
-echo "--------------------------------------------------------"
+echo "  🔧 配置选项："
+echo "  1) WARP 免费版 (MASQUE)"
+echo "  2) Teams / Zero Trust"
+echo "  3) WARP+ (License Key)"
+echo ""
+echo "  🌐 SOCKS5/HTTP: 主机IP:1111"
+echo "  ⚠️  首次配置可能需等待 3 分钟，请耐心等待"
+echo "========================================"
+echo ""
+
+log "日志监控已启动"
+log "健康检测已启动"
 
 wait $WARP_PID
