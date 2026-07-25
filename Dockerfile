@@ -14,17 +14,18 @@ RUN apt update && apt install -y --no-install-recommends \
     iptables \
     dbus \
     bash \
-    && apt clean \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | \
+    && curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | \
     gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
     echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ bookworm main" \
     > /etc/apt/sources.list.d/cloudflare-client.list && \
     apt update && \
-    apt install -y cloudflare-warp && \
+    apt install -y --no-install-recommends cloudflare-warp && \
+    apt autoremove -y --purge wget gnupg2 && \
     apt clean && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
+    /usr/share/doc/* /usr/share/man/* /usr/share/locale/* \
+    /var/cache/apt/* /var/cache/debconf/* \
+    /var/log/*.log /var/log/apt/*
 
 RUN ARCH=$(dpkg --print-architecture) && \
     curl -fsSL -o /tmp/gost.tar.gz \
@@ -35,12 +36,7 @@ RUN ARCH=$(dpkg --print-architecture) && \
 
 RUN mkdir -p /var/log/warp-gost
 
-COPY entrypoint.sh /usr/local/bin/
-COPY vhwarp.sh /usr/local/bin/
-COPY gost-setup.sh /usr/local/bin/
-COPY log-monitor.sh /usr/local/bin/
-COPY health-check.sh /usr/local/bin/
-COPY setup-dns.sh /usr/local/bin/
+COPY entrypoint.sh vhwarp.sh gost-setup.sh log-monitor.sh health-check.sh setup-dns.sh /usr/local/bin/
 
 RUN chmod +x /usr/local/bin/entrypoint.sh \
     /usr/local/bin/vhwarp.sh \
