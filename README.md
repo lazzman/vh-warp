@@ -126,6 +126,7 @@ docker exec -it vh-warp tail -f /var/log/warp-gost/health-check.log
 
 ```bash
 docker run -d \
+  --restart=always \
   --name vh-warp \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \

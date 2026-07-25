@@ -2,7 +2,7 @@ services:
   vh-warp:
     image: uxiaohan/vh-warp:latest
     container_name: vh-warp
-    restart: unless-stopped
+    restart: always
     ports:
       - "1111:1111"
     cap_add:
