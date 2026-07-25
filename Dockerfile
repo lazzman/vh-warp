@@ -8,7 +8,7 @@ RUN apt update && apt install -y --no-install-recommends \
     curl wget gnupg2 ca-certificates libc-bin && \
     curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | \
     gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ bookworm main" \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ bookworm main" \
     > /etc/apt/sources.list.d/cloudflare-client.list && \
     apt update && \
     apt install cloudflare-warp -y && \
@@ -16,6 +16,7 @@ RUN apt update && apt install -y --no-install-recommends \
     cp /usr/bin/warp-cli /usr/bin/warp-svc /stage/ && \
     for bin in /stage/warp-cli /stage/warp-svc; do \
     ldd "$bin" 2>/dev/null | grep -oP '/[^ ]+' | while read -r lib; do \
+    real=$(readlink -f "$lib" 2>/dev/null) && lib="$real"; \
     if [ -f "$lib" ]; then \
     mkdir -p "/stage/rootfs$(dirname "$lib")" && \
     cp -n "$lib" "/stage/rootfs$(dirname "$lib")/" 2>/dev/null || true; \
