@@ -10,8 +10,6 @@ log() {
 }
 
 log "🚀 vh-warp 容器启动中..."
-log "⏳ 正在优化 DNS..."
-/usr/local/bin/setup-dns.sh 2>&1 | tee -a "$LOG_FILE"
 
 ln -sf /usr/local/bin/vhwarp.sh /usr/bin/vhwarp 2>/dev/null
 ln -sf /usr/local/bin/gost-setup.sh /usr/bin/gost-setup 2>/dev/null

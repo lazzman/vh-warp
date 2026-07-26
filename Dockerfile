@@ -36,14 +36,13 @@ RUN ldconfig && \
     chmod +x /usr/local/bin/gost && rm /tmp/gost.tar.gz && \
     mkdir -p /var/log/warp-gost
 
-COPY entrypoint.sh vhwarp.sh gost-setup.sh log-monitor.sh health-check.sh setup-dns.sh /usr/local/bin/
+COPY entrypoint.sh vhwarp.sh gost-setup.sh log-monitor.sh health-check.sh /usr/local/bin/
 
 RUN chmod +x /usr/local/bin/entrypoint.sh \
     /usr/local/bin/vhwarp.sh \
     /usr/local/bin/gost-setup.sh \
     /usr/local/bin/log-monitor.sh \
-    /usr/local/bin/health-check.sh \
-    /usr/local/bin/setup-dns.sh && \
+    /usr/local/bin/health-check.sh && \
     which warp-cli && which warp-svc && which gost && \
     echo "=== 构建验证通过 ===" && \
     warp-cli --version
