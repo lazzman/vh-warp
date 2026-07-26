@@ -24,6 +24,9 @@ RUN apt update && apt install -y --no-install-recommends \
     libtss2-esys-3.0.2-0 libtss2-tctildr0 \
     && apt clean && rm -rf /var/lib/apt/lists/*
 
+RUN ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
+    echo "Asia/Shanghai" > /etc/timezone
+
 COPY --from=builder /stage/warp-cli /stage/warp-svc /usr/bin/
 COPY --from=builder /stage/rootfs/ /
 
