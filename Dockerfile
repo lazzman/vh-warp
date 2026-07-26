@@ -51,4 +51,7 @@ EXPOSE 1111
 
 ENV TZ=Asia/Shanghai
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -fsS --socks5-hostname 127.0.0.1:1111 https://cloudflare.com/cdn-cgi/trace
+
 CMD ["/usr/local/bin/entrypoint.sh"]
