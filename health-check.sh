@@ -6,7 +6,6 @@ PUSHKEY_FILE="/var/lib/cloudflare-warp/pushdeer.key"
 
 HEALTH_CHECK_INTERVAL="${HEALTH_CHECK_INTERVAL:-60}"
 HEALTH_SOFT_FAILURES="${HEALTH_SOFT_FAILURES:-3}"
-HEALTH_RESTART_GOST="${HEALTH_RESTART_GOST:-6}"
 HEALTH_HARD_RESET="${HEALTH_HARD_RESET:-9}"
 HEALTH_REMINDER_MAX="${HEALTH_REMINDER_MAX:-3}"
 HEALTH_REMINDER_INTERVAL="${HEALTH_REMINDER_INTERVAL:-3600}"
@@ -109,27 +108,6 @@ do_soft_reconnect() {
     sleep 5
 }
 
-do_restart_gost() {
-    log "重启 gost 代理"
-    local msg
-    msg="WARP 还是没反应... 这次试试重启代理层！&#128295;"
-    msg="${msg} 已连续失败 ${HEALTH_RESTART_GOST} 次，正在重启 SOCKS5/HTTP 代理服务$'\n'也许是代理层卡住了，不是 WARP 隧道的问题！"
-    pushdeer_send "🔧 重启 WARP 代理层" "$msg"
-
-    pkill -x gost 2>/dev/null || true
-    sleep 1
-    gost -L "mixed://0.0.0.0:1111" >> /var/log/warp-gost/gost.log 2>&1 &
-    local i=0
-    while [ $i -lt 10 ]; do
-        sleep 1
-        if pgrep -x "gost" > /dev/null; then
-            log "gost 重启成功"
-            break
-        fi
-        i=$((i + 1))
-    done
-}
-
 do_hard_reset() {
     log "完整重置: 删除注册信息"
     local reg_info
@@ -143,7 +121,7 @@ do_hard_reset() {
 
     local msg
     msg="WARP 彻底倒下了！"$'\n\n'
-    msg="${msg}我已经尝试了软重连和重启代理，全都是徒劳！&#128165;"$'\n\n'
+    msg="${msg}软重连也没能救回来...&#128165;"$'\n\n'
     msg="${msg}检测到你的账号类型是: <b>${account_type}</b>"$'\n'
     if [ "$account_type" = "Teams" ]; then
         msg="${msg}需要在 'Teams / Zero Trust' 选项中重新输入 Token URL"
@@ -161,7 +139,6 @@ do_hard_reset() {
     sleep 2
     warp-cli --accept-tos registration delete > /dev/null 2>&1 || true
     sleep 2
-    pkill -x gost 2>/dev/null || true
 }
 
 send_reminder() {
@@ -256,7 +233,7 @@ monitor_credentials_needed() {
 }
 
 monitor_loop() {
-    log "健康检测已启动（间隔: ${HEALTH_CHECK_INTERVAL}秒, 软重连: ${HEALTH_SOFT_FAILURES}, 重启代理: ${HEALTH_RESTART_GOST}, 完整重置: ${HEALTH_HARD_RESET}）"
+    log "健康检测已启动（间隔: ${HEALTH_CHECK_INTERVAL}秒, 软重连: ${HEALTH_SOFT_FAILURES}, 完整重置: ${HEALTH_HARD_RESET}）"
 
     while true; do
         local state
@@ -290,12 +267,6 @@ monitor_loop() {
 
         if [ "$count" -eq "$HEALTH_SOFT_FAILURES" ]; then
             do_soft_reconnect
-            sleep "$HEALTH_CHECK_INTERVAL"
-            continue
-        fi
-
-        if [ "$count" -eq "$HEALTH_RESTART_GOST" ]; then
-            do_restart_gost
             sleep "$HEALTH_CHECK_INTERVAL"
             continue
         fi

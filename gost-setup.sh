@@ -8,10 +8,12 @@ log() {
 }
 
 start_gost() {
-    log "启动 GOST 代理 (mixed SOCKS5+HTTP 监听 0.0.0.0:1111)..."
+    if pgrep -x gost > /dev/null 2>&1; then
+        log "GOST 已在运行，跳过"
+        return 0
+    fi
 
-    pkill -x gost 2>/dev/null || true
-    sleep 1
+    log "启动 GOST 代理 (mixed SOCKS5+HTTP 监听 0.0.0.0:1111)..."
 
     gost -L "mixed://0.0.0.0:1111" >> "$LOG_FILE" 2>&1 &
 
