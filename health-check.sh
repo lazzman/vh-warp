@@ -67,7 +67,7 @@ check_gost() {
 
 restart_gost() {
     log "🔧 GOST 未运行，尝试重启..."
-    gost -L "mixed://0.0.0.0:1111" >> /var/log/warp-gost/gost.log 2>&1 &
+    gost -L "mixed://0.0.0.0:1111?udp=true&nodelay=true&backlog=4096&readTimeout=0&idleTimeout=600s&tcpKeepAlive=true&keepAlivePeriod=60&readBufferSize=66666&writeBufferSize=66666" >> /var/log/warp-gost/gost.log 2>&1 &
     sleep 2
     if check_gost; then
         log "✅ GOST 重启成功"

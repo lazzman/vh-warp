@@ -75,8 +75,31 @@ fi
 log "🔍 检测 WARP 注册状态..."
 if warp-cli --accept-tos status 2>/dev/null | grep -q "Connected"; then
     log "🌐 WARP 已连接"
+elif warp-cli --accept-tos registration show 2>/dev/null | grep -q "Device ID"; then
+    log "⚡ 已注册，尝试连接..."
+    warp-cli --accept-tos mode warp+doh > /dev/null 2>&1
+    warp-cli --accept-tos connect > /dev/null 2>&1
+    sleep 5
+    if warp-cli --accept-tos status 2>/dev/null | grep -q "Connected"; then
+        log "🌐 WARP 连接成功"
+    else
+        log "⚠️ 连接失败，请运行 vhwarp 重新配置"
+    fi
 else
-    log "⚠️  WARP 未配置，请运行 vhwarp 进行配置"
+    log "🆕 未注册，自动注册免费版..."
+    warp-cli --accept-tos tunnel protocol set MASQUE > /dev/null 2>&1
+    sleep 2
+    warp-cli --accept-tos registration new > /dev/null 2>&1
+    sleep 3
+    warp-cli --accept-tos mode warp+doh > /dev/null 2>&1
+    sleep 1
+    warp-cli --accept-tos connect > /dev/null 2>&1
+    sleep 5
+    if warp-cli --accept-tos status 2>/dev/null | grep -q "Connected"; then
+        log "✅ 免费版自动注册并连接成功"
+    else
+        log "⚠️ 自动注册失败，请运行 vhwarp 手动配置"
+    fi
 fi
 
 log "📋 正在启动日志监控..."
