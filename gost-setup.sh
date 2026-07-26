@@ -34,7 +34,7 @@ stop_gost() {
     log "🛑 停止 GOST..."
     pkill -x gost 2>/dev/null || true
     sleep 1
-    log "GOST 已停止"
+    log "✅ GOST 已停止"
 }
 
 case "$1" in

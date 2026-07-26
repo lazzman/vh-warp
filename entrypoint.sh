@@ -40,26 +40,39 @@ warp-svc >> "$LOG_DIR/warp-svc.log" 2>&1 &
 WARP_PID=$!
 
 attempt=1
+MAX_ATTEMPTS=5
 while true; do
     sleep 10
     if kill -0 $WARP_PID 2>/dev/null; then
         log "✅ warp-svc 启动成功 (PID: $WARP_PID)"
         break
     fi
-    log "⏳ warp-svc 未就绪，第 ${attempt} 次尝试，10 秒后重试..."
+    if [ $attempt -ge $MAX_ATTEMPTS ]; then
+        log "❌ warp-svc 启动失败，已重试 ${MAX_ATTEMPTS} 次，容器退出"
+        exit 1
+    fi
+    log "⏳ warp-svc 未就绪，第 ${attempt}/${MAX_ATTEMPTS} 次尝试，10 秒后重试..."
     attempt=$((attempt + 1))
     warp-svc >> "$LOG_DIR/warp-svc.log" 2>&1 &
     WARP_PID=$!
 done
 
 log "⏳ 等待 warp-cli 就绪..."
+WARPCLI_TIMEOUT=30
+warpcli_count=0
 until warp-cli --accept-tos status > /dev/null 2>&1; do
     sleep 1
+    warpcli_count=$((warpcli_count + 1))
+    if [ $warpcli_count -ge $WARPCLI_TIMEOUT ]; then
+        log "⚠️  warp-cli ${WARPCLI_TIMEOUT} 秒未就绪，继续启动..."
+        break
+    fi
 done
-log "✅ warp-cli 已就绪"
+if [ $warpcli_count -lt $WARPCLI_TIMEOUT ]; then
+    log "✅ warp-cli 已就绪"
+fi
 
 /usr/local/bin/gost-setup.sh start
-log "✅ GOST 代理已启动"
 
 log "🔍 检测 WARP 注册状态..."
 if warp-cli --accept-tos status 2>/dev/null | grep -q "Connected"; then

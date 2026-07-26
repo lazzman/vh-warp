@@ -36,15 +36,19 @@ wait_for_registration() {
     local i=0
     while [ $i -lt 30 ]; do
         if warp-cli --accept-tos registration show 2>/dev/null | grep -q "Device ID"; then
+            echo ""
             return 0
         fi
+        echo -n "."
         sleep 2
         i=$((i + 1))
     done
+    echo ""
     return 1
 }
 
 clean_config() {
+    echo "🧹 正在清理旧配置..."
     log "清理旧配置..."
     warp-cli --accept-tos disconnect > /dev/null 2>&1 || true
     warp-cli --accept-tos registration delete > /dev/null 2>&1 || true
@@ -77,7 +81,7 @@ echo "📡 协议: MASQUE"
     sleep 1
 
     warp-cli --accept-tos connect > /dev/null 2>&1
-    echo -n "正在连接（最长等待 3 分钟）..."
+    echo -n "⏳ 正在连接（最长等待 3 分钟）..."
     if wait_for_connected 60; then
         echo ""
         echo "✅ WARP 免费版连接成功 (MASQUE)"
@@ -85,7 +89,7 @@ echo "📡 协议: MASQUE"
         show_status
 
         echo ""
-        echo "🚀 正在启动 GOST 代理..."
+        echo "🔍 检查 GOST 代理..."
         if /usr/local/bin/gost-setup.sh start; then
             echo "✅ GOST 代理已启动，端口: 1111"
         else
@@ -126,7 +130,7 @@ configure_teams() {
     sleep 1
 
     warp-cli --accept-tos connect > /dev/null 2>&1
-    echo -n "正在连接（最长等待 5 分钟）..."
+    echo -n "⏳ 正在连接（最长等待 5 分钟）..."
     if wait_for_connected 100; then
         echo ""
         echo "✅ Teams 连接成功"
@@ -134,7 +138,7 @@ configure_teams() {
         show_status
 
         echo ""
-        echo "🚀 正在启动 GOST 代理..."
+        echo "🔍 检查 GOST 代理..."
         if /usr/local/bin/gost-setup.sh start; then
             echo "✅ GOST 代理已启动，端口: 1111"
         else
@@ -169,7 +173,7 @@ configure_plus() {
     fi
 
     clean_config
-    log "开始配置 WARP+: $license_key"
+    log "开始配置 WARP+"
 
     warp-cli --accept-tos registration new > /dev/null 2>&1
     if ! wait_for_registration; then
@@ -185,7 +189,7 @@ configure_plus() {
     sleep 1
 
     warp-cli --accept-tos connect > /dev/null 2>&1
-    echo -n "正在连接（最长等待 3 分钟）..."
+    echo -n "⏳ 正在连接（最长等待 3 分钟）..."
     if wait_for_connected 60; then
         echo ""
         echo "✅ WARP+ 连接成功"
@@ -193,7 +197,7 @@ configure_plus() {
         show_status
 
         echo ""
-        echo "🚀 正在启动 GOST 代理..."
+        echo "🔍 检查 GOST 代理..."
         if /usr/local/bin/gost-setup.sh start; then
             echo "✅ GOST 代理已启动，端口: 1111"
         else
@@ -210,27 +214,27 @@ configure_plus() {
 show_status() {
     echo ""
     echo "========================================"
-echo "  📊 当前状态"
-echo "========================================"
-warp-cli --accept-tos status
-echo ""
-local reg_info
-reg_info=$(warp-cli --accept-tos registration show 2>/dev/null)
-if echo "$reg_info" | grep -q "Organization"; then
-    echo "👥 账户类型: Teams (Zero Trust)"
-elif echo "$reg_info" | grep -q "Premium"; then
-    echo "💎 账户类型: WARP+"
-elif echo "$reg_info" | grep -q "Device ID"; then
-    echo "📡 账户类型: WARP 免费版"
-else
-    echo "⭕ 账户类型: 未配置"
-fi
-echo ""
-if pgrep -x "gost" > /dev/null; then
-    echo "✅ GOST 代理: 运行中（端口 1111）"
-else
-    echo "⭕ GOST 代理: 已停止"
-fi
+    echo "  📊 当前状态"
+    echo "========================================"
+    warp-cli --accept-tos status
+    echo ""
+    local reg_info
+    reg_info=$(warp-cli --accept-tos registration show 2>/dev/null)
+    if echo "$reg_info" | grep -q "Organization"; then
+        echo "👥 账户类型: Teams (Zero Trust)"
+    elif echo "$reg_info" | grep -q "Premium"; then
+        echo "💎 账户类型: WARP+"
+    elif echo "$reg_info" | grep -q "Device ID"; then
+        echo "📡 账户类型: WARP 免费版"
+    else
+        echo "⭕ 账户类型: 未配置"
+    fi
+    echo ""
+    if pgrep -x "gost" > /dev/null; then
+        echo "✅ GOST 代理: 运行中（端口 1111）"
+    else
+        echo "⭕ GOST 代理: 已停止"
+    fi
     echo "========================================"
     echo ""
 }

@@ -144,7 +144,7 @@ do_hard_reset() {
 send_reminder() {
     local count="$1"
     local reg_info
-    reg_info=$(warp-cli --accept-tos registration show 2>/dev/null 2>/dev/null)
+    reg_info=$(warp-cli --accept-tos registration show 2>/dev/null)
     local account_type="WARP"
     if echo "$reg_info" 2>/dev/null | grep -q "Organization"; then
         account_type="Teams"
@@ -228,7 +228,7 @@ monitor_credentials_needed() {
             fi
         fi
 
-        sleep 30
+        sleep "$HEALTH_CHECK_INTERVAL"
     done
 }
 

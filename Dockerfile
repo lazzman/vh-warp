@@ -1,6 +1,5 @@
 FROM debian:bookworm-slim AS builder
 
-ARG GITHUB_PROXY=""
 ENV DEBIAN_FRONTEND=noninteractive
 ENV GOST_VERSION=3.2.6
 
