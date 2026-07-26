@@ -9,9 +9,9 @@ log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
-log "vh-warp 容器启动中..."
-log "正在优化 DNS..."
-/usr/local/bin/setup-dns.sh >> "$LOG_FILE" 2>&1
+log "🚀 vh-warp 容器启动中..."
+log "⏳ 正在优化 DNS..."
+/usr/local/bin/setup-dns.sh 2>&1 | tee -a "$LOG_FILE"
 
 ln -sf /usr/local/bin/vhwarp.sh /usr/bin/vhwarp 2>/dev/null
 ln -sf /usr/local/bin/gost-setup.sh /usr/bin/gost-setup 2>/dev/null
@@ -22,7 +22,7 @@ if [ ! -e /dev/net/tun ]; then
     mkdir -p /dev/net
     mknod /dev/net/tun c 10 200 2>/dev/null || true
     chmod 600 /dev/net/tun
-    log "已创建 TUN 设备 /dev/net/tun"
+    log "🔌 已创建 TUN 设备 /dev/net/tun"
 fi
 
 if ! pgrep -x "dbus-daemon" > /dev/null 2>&1; then
@@ -31,10 +31,10 @@ if ! pgrep -x "dbus-daemon" > /dev/null 2>&1; then
     mkdir -p /var/run/dbus && dbus-daemon --system --fork 2>/dev/null || \
     true
     sleep 2
-    log "dbus 已启动"
+    log "✅ dbus 已启动"
 fi
 
-log "正在启动 warp-svc..."
+log "⏳ 正在启动 warp-svc..."
 mkdir -p /run/cloudflare-warp
 warp-svc >> "$LOG_DIR/warp-svc.log" 2>&1 &
 WARP_PID=$!
@@ -43,35 +43,35 @@ attempt=1
 while true; do
     sleep 10
     if kill -0 $WARP_PID 2>/dev/null; then
-        log "warp-svc 启动成功 (PID: $WARP_PID)"
+        log "✅ warp-svc 启动成功 (PID: $WARP_PID)"
         break
     fi
-    log "warp-svc 未就绪，第 ${attempt} 次尝试，10 秒后重试..."
+    log "⏳ warp-svc 未就绪，第 ${attempt} 次尝试，10 秒后重试..."
     attempt=$((attempt + 1))
     warp-svc >> "$LOG_DIR/warp-svc.log" 2>&1 &
     WARP_PID=$!
 done
 
-log "等待 warp-cli 就绪..."
+log "⏳ 等待 warp-cli 就绪..."
 until warp-cli --accept-tos status > /dev/null 2>&1; do
     sleep 1
 done
-log "warp-cli 已就绪"
+log "✅ warp-cli 已就绪"
 
 /usr/local/bin/gost-setup.sh start
-log "GOST 代理已启动"
+log "✅ GOST 代理已启动"
 
-log "检测 WARP 注册状态..."
+log "🔍 检测 WARP 注册状态..."
 if warp-cli --accept-tos status 2>/dev/null | grep -q "Connected"; then
-    log "WARP 已连接"
+    log "🌐 WARP 已连接"
 else
-    log "WARP 未配置，请运行 vhwarp 进行配置"
+    log "⚠️  WARP 未配置，请运行 vhwarp 进行配置"
 fi
 
-log "正在启动日志监控..."
+log "📋 正在启动日志监控..."
 /usr/local/bin/log-monitor.sh > /dev/null 2>&1 &
 
-log "正在启动健康检测..."
+log "🩺 正在启动健康检测..."
 /usr/local/bin/health-check.sh > /dev/null 2>&1 &
 
 echo ""
@@ -92,7 +92,7 @@ echo "  ⚠️  首次配置可能需等待 3 分钟，请耐心等待"
 echo "========================================"
 echo ""
 
-log "日志监控已启动"
-log "健康检测已启动"
+log "✅ 日志监控已启动"
+log "✅ 健康检测已启动"
 
 wait $WARP_PID

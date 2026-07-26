@@ -17,7 +17,7 @@ select_dns() {
     local dns_list=(
         "1.1.1.1#Cloudflare"
         "8.8.8.8#Google"
-        "114.114.114.114#114DNS"
+        "223.5.5.5#AliDNS"
     )
 
     for entry in "${dns_list[@]}"; do
@@ -31,11 +31,11 @@ select_dns() {
         fi
     done
 
-    echo "$fastest_dns"
+    echo "${fastest_dns} ${fastest_time}"
 }
 
-DNS=$(select_dns)
-echo "Selected fastest DNS: $DNS (latency: ${fastest_time}ms)"
+read DNS FASTEST_TIME <<< $(select_dns)
+echo "🌐 首选 DNS: $DNS (延迟: ${FASTEST_TIME}ms)"
 
 echo "nameserver $DNS" > /etc/resolv.conf
 echo "nameserver 127.0.0.11" >> /etc/resolv.conf

@@ -69,7 +69,7 @@ check_proxy() {
 
 reset_failures() {
     set_state "MONITORING"
-    log "健康恢复，重置计数器"
+    log "✅ 健康恢复，重置计数器"
 }
 
 increment_failures() {
@@ -96,7 +96,7 @@ is_cooldown() {
 }
 
 do_soft_reconnect() {
-    log "软重连: disconnect → connect"
+    log "🔄 软重连: disconnect → connect"
     local msg
     msg="正在给 WARP 做心肺复苏... &#1103; &#65039;"
     msg="${msg} 已经连续失败了 ${HEALTH_SOFT_FAILURES} 次，执行 disconnect → connect $'\n'如果这一针下去还不行的话，我可要上大家伙了！"
@@ -109,7 +109,7 @@ do_soft_reconnect() {
 }
 
 do_hard_reset() {
-    log "完整重置: 删除注册信息"
+    log "🛟 完整重置: 删除注册信息"
     local reg_info
     reg_info=$(warp-cli --accept-tos registration show 2>/dev/null)
     local account_type="WARP"
@@ -197,12 +197,12 @@ monitor_credentials_needed() {
     local start_time
     start_time=$(date +%s)
 
-    log "进入 CREDENTIALS_NEEDED 状态，等待用户重新配置..."
+    log "⛔ 进入 CREDENTIALS_NEEDED 状态，等待用户重新配置..."
     pushdeer_send "🛡️ 监控待命" "完整重置后，WARP 需要你重新配置。$'\n'执行 docker exec -it vh-warp vhwarp$'\n'配置完成后我会自动恢复监控！"
 
     while true; do
         if check_connected; then
-            log "在 CREDENTIALS_NEEDED 状态下检测到 WARP 重连"
+            log "🌐 在 CREDENTIALS_NEEDED 状态下检测到 WARP 重连"
             report_recovery
             reset_failures
             return 0
@@ -224,7 +224,7 @@ monitor_credentials_needed() {
             if [ "$elapsed" -gt "$max_elapsed" ] && [ "$reminder_count" -eq "$HEALTH_REMINDER_MAX" ]; then
                 send_reminder_maxed
                 reminder_count=$((reminder_count + 1))
-                log "已达到最大提醒次数，通知已停止"
+                log "🔕 已达到最大提醒次数，通知已停止"
             fi
         fi
 
@@ -233,7 +233,7 @@ monitor_credentials_needed() {
 }
 
 monitor_loop() {
-    log "健康检测已启动（间隔: ${HEALTH_CHECK_INTERVAL}秒, 软重连: ${HEALTH_SOFT_FAILURES}, 完整重置: ${HEALTH_HARD_RESET}）"
+    log "💚 健康检测已启动（间隔: ${HEALTH_CHECK_INTERVAL}秒, 软重连: ${HEALTH_SOFT_FAILURES}, 完整重置: ${HEALTH_HARD_RESET}）"
 
     while true; do
         local state
@@ -249,7 +249,7 @@ monitor_loop() {
 
         if check_proxy; then
             if [ "$state" != "MONITORING" ]; then
-                log "代理从状态 $state 恢复"
+                log "✅ 代理从状态 $state 恢复"
                 report_recovery
             fi
             reset_failures
@@ -259,7 +259,7 @@ monitor_loop() {
 
         local count
         count=$(increment_failures)
-        log "代理检测失败 #${count}"
+        log "❌ 代理检测失败 #${count}"
 
         if [ "$count" -eq 1 ]; then
             pushdeer_send "🟡 WARP 打了个盹" "WARP 代理检测失败一次了...$'\n'可能只是短暂波动，我先观察观察 $'\n'如果持续失败我会采取措施的！"
@@ -282,5 +282,5 @@ monitor_loop() {
     done
 }
 
-log "健康检测守护进程启动中..."
+log "🩺 健康检测守护进程启动中..."
 monitor_loop

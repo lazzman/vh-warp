@@ -4,7 +4,7 @@ LOG_FILE="/var/log/warp-gost/gost.log"
 mkdir -p /var/log/warp-gost
 
 log() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
 start_gost() {
@@ -13,7 +13,7 @@ start_gost() {
         return 0
     fi
 
-    log "启动 GOST 代理 (mixed SOCKS5+HTTP 监听 0.0.0.0:1111)..."
+    log "🚀 启动 GOST 代理 (mixed SOCKS5+HTTP 监听 0.0.0.0:1111)..."
 
     gost -L "mixed://0.0.0.0:1111" >> "$LOG_FILE" 2>&1 &
 
@@ -21,17 +21,17 @@ start_gost() {
     while [ $i -lt 10 ]; do
         sleep 1
         if pgrep -x "gost" > /dev/null; then
-            log "GOST 启动成功，端口: 1111"
+            log "✅ GOST 启动成功，端口: 1111"
             return 0
         fi
         i=$((i + 1))
     done
 
-    log "GOST 启动失败"
+    log "❌ GOST 启动失败"
 }
 
 stop_gost() {
-    log "停止 GOST..."
+    log "🛑 停止 GOST..."
     pkill -x gost 2>/dev/null || true
     sleep 1
     log "GOST 已停止"
@@ -51,9 +51,9 @@ case "$1" in
         ;;
     status)
         if pgrep -x "gost" > /dev/null; then
-            echo "GOST 运行中（端口 1111）"
+            echo "✅ GOST 运行中（端口 1111）"
         else
-            echo "GOST 未运行"
+            echo "⭕ GOST 未运行"
         fi
         ;;
     *)
