@@ -90,7 +90,6 @@ HTTP:    192.168.x.x:1111
 |:---:|------|------|
 | 1 | 📝 记录日志 | 🟡 "WARP 打了个盹..." |
 | 3 | 🔄 软重连 `disconnect → connect` | 💉 "正在给 WARP 做心肺复苏..." |
-| 6 | 🔧 重启 SOCKS5/HTTP 代理层 | 🟠 "重启 WARP 代理层..." |
 | 9 | 💥 完整重置 `delete → 需手工重配` | 🚨 "SOS！WARP 离线！" |
 
 完整重置后，每小时提醒一次（最多 3 次 ⏰）。当你重新配置好 WARP 后，会自动退出急救模式并恢复监控 🎉
@@ -126,17 +125,13 @@ docker exec -it vh-warp tail -f /var/log/warp-gost/health-check.log
 
 ```bash
 docker run -d \
-  --restart=always \
   --name vh-warp \
+  --restart=always \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
-  --cap-add=SYS_MODULE \
-  --cap-add=MKNOD \
-  --device-cgroup-rule="c 10:200 rwm" \
+  --device=/dev/net/tun \
   -p 1111:1111 \
   --sysctl net.ipv4.conf.all.src_valid_mark=1 \
-  --sysctl net.ipv4.ip_forward=1 \
-  --sysctl net.core.somaxconn=65535 \
   -v warp-data:/var/lib/cloudflare-warp \
   uxiaohan/vh-warp:latest
 ```
@@ -170,6 +165,8 @@ docker exec -it vh-warp vhwarp
 ## ⚠️ 免责声明
 
 本项目仅供学习与技术研究使用。使用者应遵守所在国家/地区的法律法规，不得将此工具用于任何非法用途。项目作者不承担任何因使用本工具而产生的法律责任。
+
+Cloudflare, the Cloudflare logo, and Cloudflare WARP are trademarks of Cloudflare, Inc. This project is not affiliated with, endorsed by, or sponsored by Cloudflare, Inc.
 
 ## 📜 License
 
