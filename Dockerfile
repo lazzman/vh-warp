@@ -19,7 +19,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV GOST_VERSION=3.2.6
 
 RUN apt update && apt install -y --no-install-recommends \
-    curl ca-certificates procps iproute2 nftables dbus \
+    curl ca-certificates procps iproute2 nftables dbus tzdata \
     libcap2-bin libnss3-tools libpcap0.8 \
     libtss2-esys-3.0.2-0 libtss2-tctildr0 \
     && apt clean && rm -rf /var/lib/apt/lists/*
@@ -49,5 +49,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
     warp-cli --version
 
 EXPOSE 1111
+
+ENV TZ=Asia/Shanghai
 
 CMD ["/usr/local/bin/entrypoint.sh"]
