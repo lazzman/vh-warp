@@ -6,16 +6,18 @@
 
 ## ✨ 特性
 
-- 🚀 **一键部署** — Docker Compose 一行命令启动，零配置上手
+- 🚀 **一键部署** — Docker Compose 一行命令启动，首次自动注册免费版，真正零配置
 - 🔒 **隐私保护** — Cloudflare WARP 加密隧道，隐藏真实 IP，防止追踪
 - ⚡ **网络加速** — WARP 全球边缘网络，降低延迟，提升连接体验
 - 🔄 **双协议代理** — Mixed SOCKS5 + HTTP，单端口 1111 自动识别协议
 - 👤 **多账号支持** — WARP Free / WARP+ (License Key) / Teams (Zero Trust)
-- 💓 **断线自愈** — 内置心跳检测，四级渐进式自动恢复链路
+- 💓 **断线自愈** — 内置心跳检测，四级渐进式自动恢复链路，GOST 进程自动重启
 - 🔔 **即时通知** — 可选 PushDeer 推送，断线、恢复、急救实时报信
 - 🎮 **交互菜单** — `vhwarp` 配置工具，全菜单操作，新手友好
 - 🖥️ **多架构适配** — amd64 / arm64，服务器、软路由、树莓派均可运行
 - 📏 **日志可控** — 自动轮转保留最新 3MB，适合低内存环境
+- 🩺 **Docker 健康检查** — 内置 HEALTHCHECK，配合 `restart: always` 自动重启
+- 🚅 **GOST 优化** — UDP 代理、Nagle 禁用、读写缓冲区 64KB、TCP keepalive，适配软路由场景
 
 ## 🚀 快速开始
 
@@ -40,6 +42,8 @@ docker compose -f docker-compose.build.yml up -d
 > 💡 **Mac 上的 Docker Desktop 用户建议使用 [OrbStack](https://orbstack.dev/) 或 [Colima](https://github.com/abiosoft/colima)**，Docker Desktop 不支持 `/dev/net/tun`，会导致 WARP 无法正常启动。
 
 ## ⚙️ 配置
+
+容器首次启动时自动注册 WARP 免费版，开箱即用。如需切换 WARP+ 或 Teams，使用 `vhwarp`：
 
 ```bash
 docker exec -it vh-warp vhwarp
@@ -82,7 +86,7 @@ SOCKS5:  192.168.x.x:1111
 HTTP:    192.168.x.x:1111
 ```
 
-> 端口 1111 为 Mixed 模式，同一端口同时支持 HTTP 和 SOCKS5，客户端无需区分协议类型。
+> 端口 1111 为 Mixed 模式，同一端口同时支持 HTTP 和 SOCKS5，客户端无需区分协议类型。已启用 UDP 代理，支持 QUIC/HTTP3、游戏、WebRTC 等场景。
 
 ## 💓 心跳检测与自愈
 
@@ -90,9 +94,12 @@ HTTP:    192.168.x.x:1111
 
 | 🔁 连续失败 | 🛠️ 动作 | 📢 PushDeer 通知 |
 |:---:|------|------|
-| 1 | 📝 记录日志 | 🟡 "WARP 检测异常..." |
+| 1 | 📝 记录日志，检测 GOST 进程存活 | 🟡 "WARP 检测异常..." |
+| Gastro  | 🔧 自动重启 GOST | — |
 | 3 | 🔄 软重连 `disconnect → connect` | 🔧 "WARP 软重连" |
 | 9 | 💥 完整重置 `delete → 自动重注为免费版` | ✅ "WARP 已恢复（降级）" / 🚨 "WARP 离线" |
+
+代理检测失败时优先检查 GOST 进程，若进程死亡则自动重启重试，排除 GOST 崩溃误判。GOST 使用 `--socks5-hostname` 进行代理侧 DNS 解析，避免本地 DNS 泄漏影响检测准确性。
 
 完整重置后，所有账号类型自动重注为免费版恢复服务。WARP+/Teams 用户会收到降级通知，可通过 `docker exec -it vh-warp vhwarp` 恢复原套餐。若自动重连失败，则进入等待状态，每小时提醒一次（最多 3 次 ⏰）。
 
@@ -138,6 +145,8 @@ docker run -d \
   uxiaohan/vh-warp:latest
 ```
 
+> 镜像默认时区 `Asia/Shanghai`，可通过 `-e TZ=Europe/London` 覆盖。WARP 连接后 DNS 全部走隧道，无需额外配系统 DNS。
+
 ## 🩺 故障排查
 
 ```bash
@@ -146,6 +155,9 @@ docker exec -it vh-warp warp-cli status
 
 # 查看心跳检测历史
 docker exec -it vh-warp cat /var/log/warp-gost/health-check.log
+
+# 查看 Docker 健康状态
+docker inspect --format='{{.State.Health.Status}}' vh-warp
 
 # 重置所有配置并重新来过
 docker exec -it vh-warp vhwarp
