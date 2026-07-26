@@ -58,9 +58,28 @@ check_connected() {
     return 1
 }
 
+check_gost() {
+    if pgrep -x "gost" > /dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+restart_gost() {
+    log "🔧 GOST 未运行，尝试重启..."
+    gost -L "mixed://0.0.0.0:1111" >> /var/log/warp-gost/gost.log 2>&1 &
+    sleep 2
+    if check_gost; then
+        log "✅ GOST 重启成功"
+        return 0
+    fi
+    log "❌ GOST 重启失败"
+    return 1
+}
+
 check_proxy() {
     local result
-    result=$(curl -s --max-time 10 --socks5 127.0.0.1:1111 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
+    result=$(curl -s --max-time 10 --socks5-hostname 127.0.0.1:1111 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
     if echo "$result" | grep -qE "warp=(on|plus)"; then
         return 0
     fi
@@ -228,6 +247,18 @@ monitor_loop() {
             reset_failures
             sleep "$HEALTH_CHECK_INTERVAL"
             continue
+        fi
+
+        if ! check_gost; then
+            log "⚠️ GOST 未运行，尝试重启..."
+            restart_gost
+            if check_proxy; then
+                log "✅ GOST 重启后代理恢复"
+                reset_failures
+                sleep "$HEALTH_CHECK_INTERVAL"
+                continue
+            fi
+            log "⚠️ GOST 重启后代理仍失败"
         fi
 
         local count
