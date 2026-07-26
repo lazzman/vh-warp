@@ -80,27 +80,10 @@ increment_failures() {
     echo "$count"
 }
 
-is_cooldown() {
-    local cooldown_file="/var/log/warp-gost/health-cooldown"
-    if [ -f "$cooldown_file" ]; then
-        local last
-        last=$(cat "$cooldown_file" 2>/dev/null)
-        local now
-        now=$(date +%s)
-        if [ $((now - last)) -lt $HEALTH_REMINDER_INTERVAL ]; then
-            return 0
-        fi
-    fi
-    date +%s > "$cooldown_file"
-    return 1
-}
-
 do_soft_reconnect() {
     log "🔄 软重连: disconnect → connect"
-    local msg
-    msg="正在给 WARP 做心肺复苏... &#1103; &#65039;"
-    msg="${msg} 已经连续失败了 ${HEALTH_SOFT_FAILURES} 次，执行 disconnect → connect $'\n'如果这一针下去还不行的话，我可要上大家伙了！"
-    pushdeer_send "💉 WARP 急救中" "$msg"
+    local msg="**失败次数**: ${HEALTH_SOFT_FAILURES}"$'\n'"**操作**: \`disconnect\` → \`connect\`"$'\n\n'"已执行软重连，观察恢复情况..."
+    pushdeer_send "🔧 WARP 软重连" "$msg"
 
     warp-cli --accept-tos disconnect > /dev/null 2>&1 || true
     sleep 3
@@ -119,26 +102,31 @@ do_hard_reset() {
         account_type="WARP+"
     fi
 
-    local msg
-    msg="WARP 彻底倒下了！"$'\n\n'
-    msg="${msg}软重连也没能救回来...&#128165;"$'\n\n'
-    msg="${msg}检测到你的账号类型是: <b>${account_type}</b>"$'\n'
-    if [ "$account_type" = "Teams" ]; then
-        msg="${msg}需要在 'Teams / Zero Trust' 选项中重新输入 Token URL"
-    elif [ "$account_type" = "WARP+" ]; then
-        msg="${msg}需要在 'WARP+ (License Key)' 选项中重新输入 License Key"
-    else
-        msg="${msg}需要重新运行 'WARP 免费版' 配置"
-    fi
-    msg="${msg}"$'\n\n'"请执行: docker exec -it vh-warp vhwarp"$'\n'
-    msg="${msg}"$'\n'"配置完成后我会自动检测并恢复监控，在这期间每小时提醒一次（最多 ${HEALTH_REMINDER_MAX} 次）"
-
-    pushdeer_send "🚨 SOS！WARP 离线！" "$msg"
-
     warp-cli --accept-tos disconnect > /dev/null 2>&1 || true
     sleep 2
     warp-cli --accept-tos registration delete > /dev/null 2>&1 || true
     sleep 2
+    warp-cli --accept-tos registration new > /dev/null 2>&1
+    sleep 3
+    warp-cli --accept-tos connect > /dev/null 2>&1 || true
+    sleep 3
+
+    if check_connected; then
+        log "✅ 自动重连成功（免费版）"
+        if [ "$account_type" = "WARP" ]; then
+            local rmsg="**账号类型**: 免费版"$'\n'"**操作**: 自动重连"$'\n\n'"WARP 已自动恢复，无需干预。"
+            pushdeer_send "✅ WARP 已恢复" "$rmsg"
+        else
+            local rmsg="**原账号**: ${account_type}"$'\n'"**已恢复为**: 免费版"$'\n\n'"代理已恢复，原套餐降级。"$'\n\n'"---"$'\n'"恢复原套餐: \`docker exec -it vh-warp vhwarp\`"
+            pushdeer_send "✅ WARP 已恢复（降级）" "$rmsg"
+        fi
+        return 0
+    fi
+
+    log "⚠️ 自动重连失败，进入等待状态"
+    local rmsg="**账号类型**: ${account_type}"$'\n'"**状态**: 自动重连失败"$'\n\n'"---"$'\n'"\`docker exec -it vh-warp vhwarp\`"
+    pushdeer_send "🚨 WARP 离线" "$rmsg"
+    return 1
 }
 
 send_reminder() {
@@ -154,51 +142,36 @@ send_reminder() {
 
     local reminders
     local left=$((HEALTH_REMINDER_MAX - count))
-    if [ "$left" = "2" ]; then
-        reminders="我还能再催你两次..."
-    elif [ "$left" = "1" ]; then
-        reminders="这是我最后一次提醒你了哦，之后我就闭嘴了 &#129328;"
+    if [ "$left" = "0" ]; then
+        reminders="最后一次提醒"
     else
-        reminders="已经催了 ${count} 次，还剩下 ${left} 次机会提醒你"
+        reminders="剩余 ${left} 次提醒"
     fi
 
-    local msg
-    local elapsed
-    elapsed=$((count * HEALTH_REMINDER_INTERVAL / 3600))
-    msg="第 ${count} 次提醒你——WARP 还是断着的！（约 ${elapsed} 小时了）"$'\n\n'
-    msg="${msg}账号类型: <b>${account_type}</b>"$'\n'
-    msg="${msg}${reminders}"$'\n\n'
-    msg="${msg}快执行一下: docker exec -it vh-warp vhwarp"$'\n'
-    msg="${msg}再不配置我就要摆烂了！（开玩笑的... 吗？）"
+    local elapsed=$((count * HEALTH_REMINDER_INTERVAL / 3600))
+    local msg="**提醒**: ${count}/${HEALTH_REMINDER_MAX}"$'\n'"**已离线**: 约 ${elapsed} 小时"$'\n'"**账号**: ${account_type}"$'\n\n'"${reminders}"$'\n\n'"---"$'\n'"\`docker exec -it vh-warp vhwarp\`"
 
-    pushdeer_send "⏰ 第${count}次催促" "$msg"
+    pushdeer_send "⏰ 提醒 (${count}/${HEALTH_REMINDER_MAX})" "$msg"
 }
 
 send_reminder_maxed() {
-    local msg
-    msg="算了，我不催你了。&#129394;"$'\n\n'
-    msg="${msg}WARP 代理仍然离线，但通知到此为止。"$'\n'
-    msg="${msg}什么时候你重新配置好了，我会悄悄恢复监控的。"
-    msg="${msg}"$'\n'"&#128521; 我不吵了，但我会继续盯着。"
-    pushdeer_send "🔕 通知已停止" "$msg"
+    local msg="**状态**: 通知已停止"$'\n\n'"WARP 仍离线，不再催促。"$'\n'"配置恢复后监控自动重启。"
+    pushdeer_send "🔕 通知静默" "$msg"
 }
 
 report_recovery() {
-    local msg
-    msg="他回来了！！&#127881;"$'\n\n'
-    msg="${msg}WARP 连接检测通过，网络恢复正常！"$'\n'
-    msg="${msg}监控已自动重启，一切安好。"$'\n\n'
-    msg="${msg}想你断线的这段时间，想你了（笑）&#128149;"
-    pushdeer_send "💚 WARP 满血复活" "$msg"
+    local msg="**状态**: 网络已恢复"$'\n\n'"WARP 连接检测通过，监控正常运行。"
+    pushdeer_send "✅ WARP 已恢复" "$msg"
 }
 
 monitor_credentials_needed() {
     local reminder_count=0
     local start_time
     start_time=$(date +%s)
+    local last_reminder_time=$start_time
 
     log "⛔ 进入 CREDENTIALS_NEEDED 状态，等待用户重新配置..."
-    pushdeer_send "🛡️ 监控待命" "完整重置后，WARP 需要你重新配置。$'\n'执行 docker exec -it vh-warp vhwarp$'\n'配置完成后我会自动恢复监控！"
+    pushdeer_send "⏳ 等待配置" "**状态**: 等待手动配置"$'\n\n'"---"$'\n'"\`docker exec -it vh-warp vhwarp\`"
 
     while true; do
         if check_connected; then
@@ -210,17 +183,17 @@ monitor_credentials_needed() {
 
         local now
         now=$(date +%s)
-        local elapsed=$((now - start_time))
 
         if [ "$reminder_count" -lt "$HEALTH_REMINDER_MAX" ] && \
-           [ $((elapsed % HEALTH_REMINDER_INTERVAL)) -lt "$HEALTH_CHECK_INTERVAL" ] && \
-           [ "$elapsed" -gt 0 ]; then
+           [ $((now - last_reminder_time)) -ge "$HEALTH_REMINDER_INTERVAL" ]; then
             reminder_count=$((reminder_count + 1))
             send_reminder "$reminder_count"
+            last_reminder_time=$now
         fi
 
         if [ "$reminder_count" -ge "$HEALTH_REMINDER_MAX" ]; then
             local max_elapsed=$(((HEALTH_REMINDER_MAX + 1) * HEALTH_REMINDER_INTERVAL))
+            local elapsed=$((now - start_time))
             if [ "$elapsed" -gt "$max_elapsed" ] && [ "$reminder_count" -eq "$HEALTH_REMINDER_MAX" ]; then
                 send_reminder_maxed
                 reminder_count=$((reminder_count + 1))
@@ -262,20 +235,31 @@ monitor_loop() {
         log "❌ 代理检测失败 #${count}"
 
         if [ "$count" -eq 1 ]; then
-            pushdeer_send "🟡 WARP 打了个盹" "WARP 代理检测失败一次了...$'\n'可能只是短暂波动，我先观察观察 $'\n'如果持续失败我会采取措施的！"
+            pushdeer_send "🟡 WARP 检测异常" "**失败次数**: 1"$'\n\n'"可能为短暂波动，持续观察中。"$'\n'"若连续失败将自动采取措施。"
         fi
 
         if [ "$count" -eq "$HEALTH_SOFT_FAILURES" ]; then
             do_soft_reconnect
+            if check_proxy; then
+                log "✅ 软重连后检测通过"
+                reset_failures
+            else
+                log "⚠️ 软重连后检测仍失败"
+            fi
             sleep "$HEALTH_CHECK_INTERVAL"
             continue
         fi
 
         if [ "$count" -ge "$HEALTH_HARD_RESET" ]; then
-            do_hard_reset
-            set_state "CREDENTIALS_NEEDED"
-            monitor_credentials_needed
-            continue
+            if do_hard_reset; then
+                reset_failures
+                sleep "$HEALTH_CHECK_INTERVAL"
+                continue
+            else
+                set_state "CREDENTIALS_NEEDED"
+                monitor_credentials_needed
+                continue
+            fi
         fi
 
         sleep "$HEALTH_CHECK_INTERVAL"

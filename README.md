@@ -37,6 +37,8 @@ docker compose -f docker-compose.build.yml build
 docker compose -f docker-compose.build.yml up -d
 ```
 
+> 💡 **Mac 上的 Docker Desktop 用户建议使用 [OrbStack](https://orbstack.dev/) 或 [Colima](https://github.com/abiosoft/colima)**，Docker Desktop 不支持 `/dev/net/tun`，会导致 WARP 无法正常启动。
+
 ## ⚙️ 配置
 
 ```bash
@@ -88,11 +90,11 @@ HTTP:    192.168.x.x:1111
 
 | 🔁 连续失败 | 🛠️ 动作 | 📢 PushDeer 通知 |
 |:---:|------|------|
-| 1 | 📝 记录日志 | 🟡 "WARP 打了个盹..." |
-| 3 | 🔄 软重连 `disconnect → connect` | 💉 "正在给 WARP 做心肺复苏..." |
-| 9 | 💥 完整重置 `delete → 需手工重配` | 🚨 "SOS！WARP 离线！" |
+| 1 | 📝 记录日志 | 🟡 "WARP 检测异常..." |
+| 3 | 🔄 软重连 `disconnect → connect` | 🔧 "WARP 软重连" |
+| 9 | 💥 完整重置 `delete → 自动重注为免费版` | ✅ "WARP 已恢复（降级）" / 🚨 "WARP 离线" |
 
-完整重置后，每小时提醒一次（最多 3 次 ⏰）。当你重新配置好 WARP 后，会自动退出急救模式并恢复监控 🎉
+完整重置后，所有账号类型自动重注为免费版恢复服务。WARP+/Teams 用户会收到降级通知，可通过 `docker exec -it vh-warp vhwarp` 恢复原套餐。若自动重连失败，则进入等待状态，每小时提醒一次（最多 3 次 ⏰）。
 
 ## 🔔 PushDeer 通知
 
