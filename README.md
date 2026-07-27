@@ -1,8 +1,170 @@
 # 🥝 vh-warp
 
-> 基于 Cloudflare WARP 的轻量级 Docker 镜像，一键部署隐私保护 + 网络加速服务，支持 Free / Plus / Teams 全账号类型。
+> Lightweight Docker image powered by Cloudflare WARP. One-click deploy privacy protection + network acceleration. Supports Free / Plus / Teams accounts.
 
-[![Docker Pulls](https://img.shields.io/docker/pulls/uxiaohan/vh-warp)](https://hub.docker.com/r/uxiaohan/vh-warp)
+[![Docker Pulls](https://img.shields.io/docker/pulls/uxiaohan/vh-warp)](https://hub.docker.com/r/uxiaohan/vh-warp) [中文文档](#中文文档)
+
+## ✨ Features
+
+- 🚀 **One-click Deploy** — Docker Compose single command startup, auto-registers free tier on first run, truly zero-config
+- 🔒 **Privacy Protection** — Cloudflare WARP encrypted tunnel, hides real IP, prevents tracking
+- ⚡ **Network Acceleration** — WARP global edge network, lower latency, better connection experience
+- 🔄 **Dual-Protocol Proxy** — Mixed SOCKS5 + HTTP on single port 1111, auto-detects protocol
+- 👤 **Multi-Account** — WARP Free / WARP+ (License Key) / Teams (Zero Trust)
+- 💓 **Self-Healing** — Built-in heartbeat monitoring, 4-level progressive auto-recovery, GOST process auto-restart
+- 🔔 **Instant Notifications** — Optional PushDeer push for disconnection, recovery, and emergency events
+- 🎮 **Interactive Menu** — `vhwarp` config tool, full menu-driven, beginner-friendly
+- 🖥️ **Multi-Arch** — amd64 / arm64, works on servers, routers, and Raspberry Pi
+- 📏 **Log Control** — Auto-rotated, keeps latest 3MB, ideal for low-memory environments
+- 🩺 **Docker Health Check** — Built-in HEALTHCHECK, pairs with `restart: always` for auto-restart
+- 🚅 **GOST Optimized** — UDP proxy, Nagle disabled, 64KB read/write buffers, TCP keepalive, tuned for router scenarios
+## 🚀 Quick Start
+
+### 🐳 Pull from Docker Hub (Recommended)
+
+```bash
+# Download docker-compose.yml
+wget https://raw.githubusercontent.com/uxiaohan/vh-warp/main/docker-compose.yml
+# Start
+docker compose up -d
+```
+
+### 🔨 Build Locally
+
+```bash
+git clone https://github.com/uxiaohan/vh-warp.git
+cd vh-warp
+docker compose -f docker-compose.build.yml build
+docker compose -f docker-compose.build.yml up -d
+```
+
+> 💡 **Docker Desktop users on Mac should use [OrbStack](https://orbstack.dev/) or [Colima](https://github.com/abiosoft/colima)**. Docker Desktop does not support `/dev/net/tun`, which prevents WARP from starting.
+
+## ⚙️ Configuration
+
+The container auto-registers WARP Free tier on first startup. To switch to WARP+ or Teams, use `vhwarp`:
+
+```bash
+docker exec -it vh-warp vhwarp
+```
+
+```
+  ██╗   ██╗██╗  ██╗       ██╗    ██╗ █████╗ ██████╗ ██████╗
+  ██║   ██║██║  ██║       ██║    ██║██╔══██╗██╔══██╗██╔══██╗
+  ██║   ██║███████║       ██║ █╗ ██║███████║██████╔╝██████╔╝
+  ╚██╗ ██╔╝██╔══██║       ██║███╗██║██╔══██║██╔══██╗██╔═══╝
+   ╚████╔╝ ██║  ██║       ╚███╔███╔╝██║  ██║██║  ██║██║
+    ╚═══╝  ╚═╝  ╚═╝        ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝
+  ─────────────────────────────────────────────────────────
+    ☁️  Cloudflare WARP Privacy · Network Acceleration
+  ─────────────────────────────────────────────────────────
+
+  +==============================================+
+  |           vh-warp Config Tool               |
+  +==============================================+
+  |  1)  WARP Free          MASQUE, no account   |
+  |  2)  Teams / Zero Trust  Enter Token URL     |
+  |  3)  WARP+ (License Key) Enter License Key   |
+  |  4)  View Status                             |
+  |  5)  Reset & Clean                           |
+  |  6)  PushDeer Notification                   |
+  |  0)  Exit                                    |
+  +==============================================+
+
+  Select [0-6]:
+```
+
+![proxy](proxy.png)
+
+## 🌐 Proxy Usage
+
+Configure proxy on your LAN devices:
+
+```
+SOCKS5:  192.168.x.x:1111
+HTTP:    192.168.x.x:1111
+```
+
+> Port 1111 is Mixed mode — same port supports both HTTP and SOCKS5, no need to differentiate protocol type on the client. UDP proxy is enabled, supporting QUIC/HTTP3, gaming, WebRTC, and more.
+
+## 💓 Health Check & Auto-Recovery
+
+The container runs a built-in self-healing daemon that continuously monitors `warp=on` and automates recovery for the entire chain:
+
+| 🔁 Consecutive Failures | 🛠️ Action | 📢 PushDeer Notification |
+|:---:|------|------|
+| 1 | 📝 Log, check GOST process | 🟡 "WARP check failed..." |
+| 2 | 🔧 Auto-restart GOST | — |
+| 3 | 🔄 Soft reconnect `disconnect → connect` | 🔧 "WARP soft reconnect" |
+| 9 | 💥 Full reset `delete → auto re-register as Free` | ✅ "WARP recovered (downgraded)" / 🚨 "WARP offline" |
+
+When proxy check fails, it first verifies the GOST process. If GOST is dead, it auto-restarts and retries — eliminating false positives from GOST crashes. GOST uses `--socks5-hostname` for proxy-side DNS resolution, preventing local DNS leakage from affecting detection accuracy.
+
+After a full reset, all account types auto re-register as Free tier to restore service. WARP+/Teams users receive a downgrade notification and can restore their plan via `docker exec -it vh-warp vhwarp`. If auto-reconnect fails, it enters a waiting state with hourly reminders (max 3 times ⏰).
+
+## 🔔 PushDeer Notifications
+
+Enter the config menu **6) PushDeer Notification** to set your PushKey:
+
+1. 📲 Install the [PushDeer App](https://www.pushdeer.com/)
+2. 🔑 Get your PushKey from the App
+3. 📝 Enter the PushKey in vhwarp — a test notification confirms the setup
+
+Once configured, all disconnect, reconnect, emergency, and recovery events are pushed to your phone in real time 📱
+
+## 📋 Logs
+
+Logs are stored in `/var/log/warp-gost/`, capped at 3MB per file with auto-rotation:
+
+| 📄 File | 📝 Content |
+|------|------|
+| `warp-svc.log` | Cloudflare WARP service log |
+| `gost.log` | GOST proxy service log |
+| `health-check.log` | 💓 Health check log |
+| `vhwarp.log` | ⚙️ Config tool operation log |
+| `entrypoint.log` | 🚀 Container startup log |
+```bash
+# View health check logs in real time
+docker exec -it vh-warp tail -f /var/log/warp-gost/health-check.log
+```
+
+## 📦 Docker Run
+
+```bash
+docker run -d \
+  --name vh-warp \
+  --restart=always \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --device=/dev/net/tun \
+  -p 1111:1111 \
+  --sysctl net.ipv4.conf.all.src_valid_mark=1 \
+  -v warp-data:/var/lib/cloudflare-warp \
+  uxiaohan/vh-warp:latest
+```
+
+> Default timezone is `Asia/Shanghai`. Override with `-e TZ=Europe/London`. After WARP connects, all DNS traffic goes through the tunnel — no extra system DNS config needed.
+
+## 🩺 Troubleshooting
+
+```bash
+# Check WARP connection status
+docker exec -it vh-warp warp-cli status
+
+# View health check history
+docker exec -it vh-warp cat /var/log/warp-gost/health-check.log
+
+# View Docker health status
+docker inspect --format='{{.State.Health.Status}}' vh-warp
+
+# Reset everything and start over
+docker exec -it vh-warp vhwarp
+# → Select "5) Reset & Clean"
+```
+
+---
+
+## 中文文档
 
 ## ✨ 特性
 
