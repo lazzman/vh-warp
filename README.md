@@ -16,7 +16,7 @@
 - 🎮 **Interactive Menu** — `vhwarp` config tool, full menu-driven, beginner-friendly
 - 🖥️ **Multi-Arch** — amd64 / arm64, works on servers, routers, and Raspberry Pi
 - 📏 **Log Control** — Auto-rotated, keeps latest 3MB, ideal for low-memory environments
-- 🩺 **Docker Health Check** — Built-in HEALTHCHECK, pairs with `restart: always` for auto-restart
+- 🩺 **Docker Health Check** — Built-in HEALTHCHECK reports proxy status; recovery is handled by the in-container watchdog
 - 🚅 **GOST Optimized** — UDP proxy, Nagle disabled, 64KB read/write buffers, TCP keepalive, tuned for router scenarios
 ## 🚀 Quick Start
 
@@ -96,11 +96,13 @@ The container runs a built-in self-healing daemon that continuously monitors `wa
 | 1 | 📝 Log, check GOST process | 🟡 "WARP check failed..." |
 | 2 | 🔧 Auto-restart GOST | — |
 | 3 | 🔄 Soft reconnect `disconnect → connect` | 🔧 "WARP soft reconnect" |
-| 9 | 💥 Full reset `delete → auto re-register as Free` | ✅ "WARP recovered (downgraded)" / 🚨 "WARP offline" |
+| Unavailable for 10 min | 💥 Verify direct Internet, retry current registration, then fall back to Free | ✅ "WARP recovered as Free" |
 
-When proxy check fails, it first verifies the GOST process. If GOST is dead, it auto-restarts and retries — eliminating false positives from GOST crashes. GOST uses `--socks5-hostname` for proxy-side DNS resolution, preventing local DNS leakage from affecting detection accuracy.
+When proxy checks fail, the watchdog first verifies GOST and tries two independent WARP trace endpoints. It preserves the current registration during transient failures and soft reconnects. Before falling back, it disconnects WARP and verifies that the host's direct Internet works, then makes one final attempt with the original registration.
 
-After a full reset, all account types auto re-register as Free tier to restore service. WARP+/Teams users receive a downgrade notification and can restore their plan via `docker exec -it vh-warp vhwarp`. If auto-reconnect fails, it enters a waiting state with hourly reminders (max 3 times ⏰).
+If WARP remains unavailable for 10 minutes while direct Internet is healthy, the watchdog falls back to Free to restore service. WARP+/Teams credentials are not stored and are not automatically restored. If Free registration is temporarily unavailable, GOST remains available through the host's direct connection and registration retries use backoff. Traffic may therefore expose the host egress IP during recovery. Set `HEALTH_FALLBACK_AFTER` to adjust the fallback delay.
+
+Cloudflare One Client 2026.6 and later requires outbound HTTPS access to `api.devices.cloudflare.com` for registration and settings. MASQUE also requires working UDP/HTTP3 connectivity.
 
 ## 🔔 PushDeer Notifications
 
@@ -157,6 +159,9 @@ docker exec -it vh-warp cat /var/log/warp-gost/health-check.log
 # View Docker health status
 docker inspect --format='{{.State.Health.Status}}' vh-warp
 
+# Collect official Cloudflare diagnostics
+docker exec -it vh-warp warp-diag
+
 # Reset everything and start over
 docker exec -it vh-warp vhwarp
 # → Select "5) Reset & Clean"
@@ -178,7 +183,7 @@ docker exec -it vh-warp vhwarp
 - 🎮 **交互菜单** — `vhwarp` 配置工具，全菜单操作，新手友好
 - 🖥️ **多架构适配** — amd64 / arm64，服务器、软路由、树莓派均可运行
 - 📏 **日志可控** — 自动轮转保留最新 3MB，适合低内存环境
-- 🩺 **Docker 健康检查** — 内置 HEALTHCHECK，配合 `restart: always` 自动重启
+- 🩺 **Docker 健康检查** — 内置 HEALTHCHECK 上报代理状态，容器内守护进程负责恢复
 - 🚅 **GOST 优化** — UDP 代理、Nagle 禁用、读写缓冲区 64KB、TCP keepalive，适配软路由场景
 
 ## 🚀 快速开始
@@ -257,13 +262,15 @@ HTTP:    192.168.x.x:1111
 | 🔁 连续失败 | 🛠️ 动作 | 📢 PushDeer 通知 |
 |:---:|------|------|
 | 1 | 📝 记录日志，检测 GOST 进程存活 | 🟡 "WARP 检测异常..." |
-| Gastro  | 🔧 自动重启 GOST | — |
+| GOST 异常 | 🔧 自动重启 GOST | — |
 | 3 | 🔄 软重连 `disconnect → connect` | 🔧 "WARP 软重连" |
-| 9 | 💥 完整重置 `delete → 自动重注为免费版` | ✅ "WARP 已恢复（降级）" / 🚨 "WARP 离线" |
+| 持续不可用 10 分钟 | 💥 验证直连、最后重试原注册，再回退 Free | ✅ "WARP 已恢复为 Free" |
 
-代理检测失败时优先检查 GOST 进程，若进程死亡则自动重启重试，排除 GOST 崩溃误判。GOST 使用 `--socks5-hostname` 进行代理侧 DNS 解析，避免本地 DNS 泄漏影响检测准确性。
+代理检测失败时先检查 GOST，并使用两个独立 WARP trace 端点复核。短暂异常只执行保留注册的软重连。回退前会断开 WARP 验证宿主直连网络，再使用原注册做最后一次连接尝试；宿主网络本身异常时不会删除注册。
 
-完整重置后，所有账号类型自动重注为免费版恢复服务。WARP+/Teams 用户会收到降级通知，可通过 `docker exec -it vh-warp vhwarp` 恢复原套餐。若自动重连失败，则进入等待状态，每小时提醒一次（最多 3 次 ⏰）。
+当 WARP 持续不可用 10 分钟、宿主直连正常且原注册最后重连仍失败时，系统才回退到 Free。WARP+/Teams 凭据不会保存，也不会自动恢复。Free 注册 API 暂时不可用时，GOST 保持宿主直连并使用退避策略重试；恢复期间流量可能暴露服务器真实出口 IP。可通过 `HEALTH_FALLBACK_AFTER` 调整回退时间。
+
+Cloudflare One Client 2026.6 及更高版本注册和同步设置需要放行 `api.devices.cloudflare.com` 的出站 HTTPS；MASQUE 还要求 UDP/HTTP3 网络可用。
 
 ## 🔔 PushDeer 通知
 
@@ -320,6 +327,9 @@ docker exec -it vh-warp cat /var/log/warp-gost/health-check.log
 
 # 查看 Docker 健康状态
 docker inspect --format='{{.State.Health.Status}}' vh-warp
+
+# 收集 Cloudflare 官方诊断包
+docker exec -it vh-warp warp-diag
 
 # 重置所有配置并重新来过
 docker exec -it vh-warp vhwarp

@@ -2,6 +2,11 @@
 
 LOG_DIR="/var/log/warp-gost"
 LOG_FILE="$LOG_DIR/entrypoint.log"
+WARP_CLI_TIMEOUT="${WARP_CLI_TIMEOUT:-60}"
+WARP_REGISTRATION_TIMEOUT="${WARP_REGISTRATION_TIMEOUT:-60}"
+WARP_CONNECT_TIMEOUT="${WARP_CONNECT_TIMEOUT:-180}"
+
+source /usr/local/bin/warp-common.sh
 
 mkdir -p "$LOG_DIR"
 
@@ -18,9 +23,13 @@ ln -sf /usr/local/bin/health-check.sh /usr/bin/health-check 2>/dev/null
 
 if [ ! -e /dev/net/tun ]; then
     mkdir -p /dev/net
-    mknod /dev/net/tun c 10 200 2>/dev/null || true
+    mknod /dev/net/tun c 10 200 >> "$LOG_FILE" 2>&1 || true
+fi
+if [ -c /dev/net/tun ]; then
     chmod 600 /dev/net/tun
-    log "🔌 已创建 TUN 设备 /dev/net/tun"
+    log "🔌 TUN 设备已就绪"
+else
+    log "⚠️ TUN 设备不可用，WARP 无法建立隧道，代理将暂时使用直连"
 fi
 
 if ! pgrep -x "dbus-daemon" > /dev/null 2>&1; then
@@ -55,50 +64,72 @@ while true; do
     WARP_PID=$!
 done
 
-log "⏳ 等待 warp-cli 就绪..."
-WARPCLI_TIMEOUT=30
-warpcli_count=0
-until warp-cli --accept-tos status > /dev/null 2>&1; do
-    sleep 1
-    warpcli_count=$((warpcli_count + 1))
-    if [ $warpcli_count -ge $WARPCLI_TIMEOUT ]; then
-        log "⚠️  warp-cli ${WARPCLI_TIMEOUT} 秒未就绪，继续启动..."
-        break
-    fi
-done
-if [ $warpcli_count -lt $WARPCLI_TIMEOUT ]; then
+log "⏳ 等待 warp-cli 就绪（最长 ${WARP_CLI_TIMEOUT} 秒）..."
+warp_cli_available=false
+if wait_for_warp_cli "$WARP_CLI_TIMEOUT"; then
+    warp_cli_available=true
     log "✅ warp-cli 已就绪"
+else
+    log "⚠️ warp-cli 未就绪，跳过自动配置，代理将暂时使用直连"
 fi
 
 /usr/local/bin/gost-setup.sh start
 
-log "🔍 检测 WARP 注册状态..."
-if warp-cli --accept-tos status 2>/dev/null | grep -q "Connected"; then
-    log "🌐 WARP 已连接"
-elif warp-cli --accept-tos registration show 2>/dev/null | grep -q "Device ID"; then
-    log "⚡ 已注册，尝试连接..."
-    warp-cli --accept-tos mode warp+doh > /dev/null 2>&1
-    warp-cli --accept-tos connect > /dev/null 2>&1
-    sleep 5
-    if warp-cli --accept-tos status 2>/dev/null | grep -q "Connected"; then
-        log "🌐 WARP 连接成功"
+connect_warp() {
+    local attempt delay
+    for attempt in 1 2 3; do
+        log "⚡ WARP 连接尝试 ${attempt}/3..."
+        if ! warp-cli --accept-tos connect >> "$LOG_FILE" 2>&1; then
+            log "⚠️ connect 命令失败（尝试 ${attempt}/3）"
+        fi
+        if wait_for_connected "$WARP_CONNECT_TIMEOUT"; then
+            log "🌐 WARP 连接成功"
+            return 0
+        fi
+        warp-cli --accept-tos disconnect >> "$LOG_FILE" 2>&1 || true
+        case "$attempt" in
+            1) delay=5 ;;
+            2) delay=15 ;;
+            *) delay=0 ;;
+        esac
+        [ "$delay" -gt 0 ] && sleep "$delay"
+    done
+    return 1
+}
+
+if [ "$warp_cli_available" = true ]; then
+    log "🔍 检测 WARP 注册状态..."
+    if is_warp_connected; then
+        log "🌐 WARP 已连接"
+    elif acquire_warp_lock 30; then
+        if ! has_registration; then
+            log "🆕 未注册，自动注册免费版..."
+            if ! warp-cli --accept-tos tunnel protocol set MASQUE >> "$LOG_FILE" 2>&1; then
+                log "⚠️ MASQUE 协议设置失败"
+            fi
+            if ! warp-cli --accept-tos registration new >> "$LOG_FILE" 2>&1; then
+                log "⚠️ registration new 命令失败"
+            fi
+            if wait_for_registration "$WARP_REGISTRATION_TIMEOUT"; then
+                log "✅ 免费版注册完成"
+            else
+                log "⚠️ 注册超时，代理将暂时使用直连，健康检测稍后重试"
+            fi
+        else
+            log "⚡ 检测到现有 $(get_account_type) 注册"
+        fi
+
+        if has_registration; then
+            if ! warp-cli --accept-tos mode warp+doh >> "$LOG_FILE" 2>&1; then
+                log "⚠️ WARP 模式设置失败"
+            fi
+            if ! connect_warp; then
+                log "⚠️ WARP 暂时无法连接，代理将使用直连，健康检测继续恢复"
+            fi
+        fi
+        release_warp_lock
     else
-        log "⚠️ 连接失败，请运行 vhwarp 重新配置"
-    fi
-else
-    log "🆕 未注册，自动注册免费版..."
-    warp-cli --accept-tos tunnel protocol set MASQUE > /dev/null 2>&1
-    sleep 2
-    warp-cli --accept-tos registration new > /dev/null 2>&1
-    sleep 3
-    warp-cli --accept-tos mode warp+doh > /dev/null 2>&1
-    sleep 1
-    warp-cli --accept-tos connect > /dev/null 2>&1
-    sleep 5
-    if warp-cli --accept-tos status 2>/dev/null | grep -q "Connected"; then
-        log "✅ 免费版自动注册并连接成功"
-    else
-        log "⚠️ 自动注册失败，请运行 vhwarp 手动配置"
+        log "⚠️ 无法取得 WARP 操作锁，跳过自动配置"
     fi
 fi
 

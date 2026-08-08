@@ -2,6 +2,7 @@
 
 LOG_FILE="/var/log/warp-gost/vhwarp.log"
 mkdir -p /var/log/warp-gost
+source /usr/local/bin/warp-common.sh
 
 log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
@@ -51,8 +52,28 @@ clean_config() {
     echo "🧹 正在清理旧配置..."
     log "清理旧配置..."
     warp-cli --accept-tos disconnect > /dev/null 2>&1 || true
-    warp-cli --accept-tos registration delete > /dev/null 2>&1 || true
-    sleep 1
+    if has_registration; then
+        warp-cli --accept-tos registration delete >> "$LOG_FILE" 2>&1 || true
+        if ! wait_for_registration_deleted 30; then
+            echo "❌ 旧注册删除超时，请稍后重试"
+            log "旧注册删除未在 30 秒内完成"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+begin_configuration() {
+    if ! acquire_warp_lock 30; then
+        echo "❌ 另一个 WARP 配置或恢复操作正在进行，请稍后重试"
+        return 1
+    fi
+}
+
+finish_configuration() {
+    echo "MONITORING" > /var/log/warp-gost/health-state.txt
+    rm -f /var/log/warp-gost/health-failure-since.txt
+    release_warp_lock
 }
 
 configure_free() {
@@ -64,7 +85,23 @@ echo "📡 协议: MASQUE"
         return 1
     fi
 
-    clean_config
+    local current_type confirm
+    current_type=$(get_account_type)
+    if [ "$current_type" = "WARP+" ] || [ "$current_type" = "Teams" ]; then
+        echo "⚠️ 当前账户为 ${current_type}，切换到 Free 将删除当前设备注册。"
+        read -r -p "确认继续？(y/N): " confirm
+        if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+            echo "↩️ 已取消"
+            return 0
+        fi
+    fi
+
+    begin_configuration || return 1
+
+    if ! clean_config; then
+        finish_configuration
+        return 1
+    fi
     log "开始配置 WARP Free"
 
     warp-cli --accept-tos tunnel protocol set MASQUE > /dev/null 2>&1
@@ -74,6 +111,7 @@ echo "📡 协议: MASQUE"
     if ! wait_for_registration; then
         echo "❌ 注册失败"
         log "WARP Free 注册失败"
+        finish_configuration
         return 1
     fi
 
@@ -99,8 +137,10 @@ echo "📡 协议: MASQUE"
         echo ""
         echo "❌ WARP 连接失败"
         log "WARP Free 连接失败"
+        finish_configuration
         return 1
     fi
+    finish_configuration
 }
 
 configure_teams() {
@@ -119,12 +159,33 @@ configure_teams() {
         return 1
     fi
 
-    clean_config
+    begin_configuration || return 1
+
+    if ! clean_config; then
+        finish_configuration
+        return 1
+    fi
     log "开始配置 Teams"
 
     echo "⏳ 正在注册 Teams Token..."
-    warp-cli --accept-tos registration token "$token_url" > /dev/null 2>&1
-    sleep 3
+    if ! warp-cli --accept-tos registration token "$token_url" > /dev/null 2>&1; then
+        echo "❌ Teams Token 注册失败，Token 可能已过期"
+        log "Teams Token 注册命令失败"
+        finish_configuration
+        return 1
+    fi
+    if ! wait_for_registration; then
+        echo "❌ Teams 注册超时"
+        log "Teams 注册未产生 Device ID"
+        finish_configuration
+        return 1
+    fi
+    if [ "$(get_account_type)" != "Teams" ]; then
+        echo "❌ 注册未关联到 Teams Organization，请重新获取 Token URL"
+        log "Teams 账户类型验证失败"
+        finish_configuration
+        return 1
+    fi
 
     warp-cli --accept-tos mode warp+doh > /dev/null 2>&1
     sleep 1
@@ -153,8 +214,10 @@ configure_teams() {
         echo ""
         echo "日志: $LOG_FILE"
         log "Teams 连接失败"
+        finish_configuration
         return 1
     fi
+    finish_configuration
 }
 
 configure_plus() {
@@ -172,18 +235,35 @@ configure_plus() {
         return 1
     fi
 
-    clean_config
+    begin_configuration || return 1
+
+    if ! clean_config; then
+        finish_configuration
+        return 1
+    fi
     log "开始配置 WARP+"
 
     warp-cli --accept-tos registration new > /dev/null 2>&1
     if ! wait_for_registration; then
         echo "❌ 注册失败"
         log "WARP+ 注册失败"
+        finish_configuration
         return 1
     fi
 
-    warp-cli --accept-tos registration license "$license_key"
+    if ! warp-cli --accept-tos registration license "$license_key" > /dev/null 2>&1; then
+        echo "❌ License 应用失败，请检查 Key 或设备数量限制"
+        log "WARP+ License 命令失败"
+        finish_configuration
+        return 1
+    fi
     sleep 2
+    if [ "$(get_account_type)" != "WARP+" ]; then
+        echo "❌ License 未生效，当前注册不是 WARP+"
+        log "WARP+ 账户类型验证失败"
+        finish_configuration
+        return 1
+    fi
 
     warp-cli --accept-tos mode warp+doh > /dev/null 2>&1
     sleep 1
@@ -207,8 +287,10 @@ configure_plus() {
         echo ""
         echo "❌ WARP+ 连接失败"
         log "WARP+ 连接失败"
+        finish_configuration
         return 1
     fi
+    finish_configuration
 }
 
 show_status() {
@@ -222,7 +304,7 @@ show_status() {
     reg_info=$(warp-cli --accept-tos registration show 2>/dev/null)
     if echo "$reg_info" | grep -q "Organization"; then
         echo "👥 账户类型: Teams (Zero Trust)"
-    elif echo "$reg_info" | grep -q "Premium"; then
+    elif echo "$reg_info" | grep -qE "Premium|Unlimited|WARP[+]"; then
         echo "💎 账户类型: WARP+"
     elif echo "$reg_info" | grep -q "Device ID"; then
         echo "📡 账户类型: WARP 免费版"
@@ -252,6 +334,8 @@ reset_config() {
         return 0
     fi
 
+    begin_configuration || return 1
+
     log "重置配置"
     warp-cli --accept-tos disconnect > /dev/null 2>&1 || true
     sleep 2
@@ -259,6 +343,7 @@ reset_config() {
     sleep 2
 
     echo "✅ 配置已重置"
+    finish_configuration
 }
 
 pushdeer_menu() {

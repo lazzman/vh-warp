@@ -8,7 +8,7 @@ RUN apt update && apt install -y --no-install-recommends curl ca-certificates &&
     "https://pkg.cloudflareclient.com/pool/bookworm/main/c/cloudflare-warp/cloudflare-warp_2026.6.880.0_$(dpkg --print-architecture).deb" && \
     dpkg-deb -x /tmp/warp.deb /tmp/warp && \
     mkdir -p /stage/rootfs/etc/dbus-1 && \
-    cp /tmp/warp/bin/warp-cli /tmp/warp/bin/warp-svc /stage/ && \
+    cp /tmp/warp/bin/warp-cli /tmp/warp/bin/warp-svc /tmp/warp/bin/warp-diag /stage/ && \
     cp -a /tmp/warp/etc/dbus-1/. /stage/rootfs/etc/dbus-1/ 2>/dev/null || true && \
     rm -rf /tmp/warp.deb /tmp/warp
 
@@ -27,7 +27,7 @@ RUN apt update && apt install -y --no-install-recommends \
 RUN ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
     echo "Asia/Shanghai" > /etc/timezone
 
-COPY --from=builder /stage/warp-cli /stage/warp-svc /usr/bin/
+COPY --from=builder /stage/warp-cli /stage/warp-svc /stage/warp-diag /usr/bin/
 COPY --from=builder /stage/rootfs/ /
 
 RUN ldconfig && \
@@ -39,14 +39,15 @@ RUN ldconfig && \
     chmod +x /usr/local/bin/gost && rm /tmp/gost.tar.gz && \
     mkdir -p /var/log/warp-gost
 
-COPY entrypoint.sh vhwarp.sh gost-setup.sh log-monitor.sh health-check.sh /usr/local/bin/
+COPY entrypoint.sh vhwarp.sh gost-setup.sh log-monitor.sh health-check.sh warp-common.sh /usr/local/bin/
 
 RUN chmod +x /usr/local/bin/entrypoint.sh \
     /usr/local/bin/vhwarp.sh \
     /usr/local/bin/gost-setup.sh \
     /usr/local/bin/log-monitor.sh \
-    /usr/local/bin/health-check.sh && \
-    which warp-cli && which warp-svc && which gost && \
+    /usr/local/bin/health-check.sh \
+    /usr/local/bin/warp-common.sh && \
+    which warp-cli && which warp-svc && which warp-diag && which gost && \
     echo "=== 构建验证通过 ===" && \
     warp-cli --version
 
@@ -54,7 +55,7 @@ EXPOSE 1111
 
 ENV TZ=Asia/Shanghai
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -fsS --socks5-hostname 127.0.0.1:1111 https://cloudflare.com/cdn-cgi/trace
+HEALTHCHECK --interval=30s --timeout=12s --start-period=60s --retries=3 \
+    CMD curl -fsS --max-time 8 --socks5-hostname 127.0.0.1:1111 https://www.cloudflare.com/cdn-cgi/trace | grep -qE '^warp=(on|plus)$'
 
 CMD ["/usr/local/bin/entrypoint.sh"]
