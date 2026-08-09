@@ -4,23 +4,47 @@ services:
       context: .
       args:
         - GITHUB_PROXY=${GITHUB_PROXY:-}
+    image: vh-warp:local
     container_name: vh-warp
     restart: unless-stopped
+    # 上限而非预留。10 实例建议 ≥4g，详见 README「内存估算」
+    mem_limit: 4g
     ports:
-      - "1111:1111"
+      - "${PORT_RANGE_START:-1110}-${PORT_RANGE_END:-1142}:${PORT_RANGE_START:-1110}-${PORT_RANGE_END:-1142}"
     cap_add:
       - NET_ADMIN
       - NET_RAW
+      - SYS_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
     sysctls:
       - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv4.ip_forward=1
     environment:
+      INSTANCE_COUNT: ${INSTANCE_COUNT:-1}
+      BASE_PORT: ${BASE_PORT:-1111}
+      LB_PORT: ${LB_PORT:-1110}
+      LB_STRATEGY: ${LB_STRATEGY:-round}
+      LB_ENABLED: ${LB_ENABLED:-auto}
       HEALTH_CHECK_INTERVAL: ${HEALTH_CHECK_INTERVAL:-60}
       HEALTH_SOFT_FAILURES: ${HEALTH_SOFT_FAILURES:-3}
       HEALTH_FALLBACK_AFTER: ${HEALTH_FALLBACK_AFTER:-600}
+      UPSTREAM_SOCKS5: ${UPSTREAM_SOCKS5:-}
+      UPSTREAM_SOCKS5_UDP: ${UPSTREAM_SOCKS5_UDP:-udp}
+      UPSTREAM_MTU: ${UPSTREAM_MTU:-1280}
+      GOST_IDLE_TIMEOUT: ${GOST_IDLE_TIMEOUT:-120s}
+      GOST_READ_BUFFER: ${GOST_READ_BUFFER:-32768}
+      GOST_WRITE_BUFFER: ${GOST_WRITE_BUFFER:-32768}
+      GOST_BACKLOG: ${GOST_BACKLOG:-1024}
+      LB_IDLE_TIMEOUT: ${LB_IDLE_TIMEOUT:-120}
+      TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - warp-data:/var/lib/cloudflare-warp
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    security_opt:
+      - apparmor:unconfined
+      - seccomp:unconfined
 
 volumes:
   warp-data:

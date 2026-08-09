@@ -1,2 +1,5 @@
 .env
 .headroom
+__pycache__/
+*.pyc
+.DS_Store

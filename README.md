@@ -2,7 +2,7 @@
 
 > Lightweight Docker image powered by Cloudflare WARP. One-click deploy privacy protection + network acceleration. Supports Free / Plus / Teams accounts.
 
-[![Docker Pulls](https://img.shields.io/docker/pulls/uxiaohan/vh-warp)](https://hub.docker.com/r/uxiaohan/vh-warp) [中文文档](#中文文档)
+[![GHCR](https://img.shields.io/badge/GHCR-lazzman%2Fvh--warp-blue)](https://github.com/lazzman/vh-warp/pkgs/container/vh-warp) [中文文档](#中文文档)
 
 ## ✨ Features
 
@@ -17,14 +17,17 @@
 - 🖥️ **Multi-Arch** — amd64 / arm64, works on servers, routers, and Raspberry Pi
 - 📏 **Log Control** — Auto-rotated, keeps latest 3MB, ideal for low-memory environments
 - 🩺 **Docker Health Check** — Built-in HEALTHCHECK reports proxy status; recovery is handled by the in-container watchdog
-- 🚅 **GOST Optimized** — UDP proxy, Nagle disabled, 64KB read/write buffers, TCP keepalive, tuned for router scenarios
+- 🚅 **GOST Optimized** — UDP proxy, Nagle disabled, 32KB read/write buffers, 120s idle timeout, TCP keepalive (memory-friendly multi-instance defaults)
+- 🧩 **Multi-Instance** — `INSTANCE_COUNT` spawns N isolated WARP+GOST stacks (netns), ports auto-increment
+- ⚖️ **Load Balancer** — Unified port `1110` with round / random / hash / sticky strategies; sticky via `socks5h://{id}@host:1110`
+
 ## 🚀 Quick Start
 
-### 🐳 Pull from Docker Hub (Recommended)
+### 🐳 Pull from GHCR (Recommended)
 
 ```bash
 # Download docker-compose.yml
-wget https://raw.githubusercontent.com/uxiaohan/vh-warp/main/docker-compose.yml
+wget https://raw.githubusercontent.com/lazzman/vh-warp/main/docker-compose.yml
 # Start
 docker compose up -d
 ```
@@ -32,7 +35,7 @@ docker compose up -d
 ### 🔨 Build Locally
 
 ```bash
-git clone https://github.com/uxiaohan/vh-warp.git
+git clone https://github.com/lazzman/vh-warp.git
 cd vh-warp
 docker compose -f docker-compose.build.yml build
 docker compose -f docker-compose.build.yml up -d
@@ -78,14 +81,86 @@ docker exec -it vh-warp vhwarp
 
 ## 🌐 Proxy Usage
 
-Configure proxy on your LAN devices:
+### Single instance (default)
 
 ```
 SOCKS5:  192.168.x.x:1111
 HTTP:    192.168.x.x:1111
 ```
 
-> Port 1111 is Mixed mode — same port supports both HTTP and SOCKS5, no need to differentiate protocol type on the client. UDP proxy is enabled, supporting QUIC/HTTP3, gaming, WebRTC, and more.
+> Port 1111 is Mixed mode — same port supports both HTTP and SOCKS5. UDP proxy is enabled.
+
+### Multi-instance + load balancing
+
+```bash
+# .env or compose environment
+INSTANCE_COUNT=3
+BASE_PORT=1111
+LB_PORT=1110
+LB_STRATEGY=round   # round | random | hash | sticky
+```
+
+| Access | Address | Notes |
+|------|------|------|
+| Load balancer | `host:1110` | Distributes across all healthy instances |
+| Instance 0 | `host:1111` | Direct to instance 0 |
+| Instance 1 | `host:1112` | Direct to instance 1 |
+| Instance N | `host:1111+N` | Direct to instance N |
+
+**Sticky session** (same id → same backend):
+
+```bash
+# SOCKS5: username is the sticky id (password ignored)
+socks5h://session-alice@192.168.x.x:1110
+socks5h://42@192.168.x.x:1110
+
+# HTTP proxy with basic user
+http://session-alice@192.168.x.x:1110
+```
+
+When a username/id is present, traffic is always hashed to a fixed backend regardless of `LB_STRATEGY`. Without a username, `round` / `random` / `hash`(by client IP) apply.
+
+**Data isolation**: each instance stores WARP registration under `/var/lib/cloudflare-warp/instances/<id>/` (single-instance mode still uses the volume root for backward compatibility).
+
+```bash
+# Configure a specific instance
+docker exec -it vh-warp vhwarp -i 1
+```
+
+### Verify WARP exit IP
+
+After the proxy is up, confirm traffic actually goes through Cloudflare WARP:
+
+```bash
+# Primary check (same probe used by health-check)
+curl -s --socks5-hostname 127.0.0.1:1111 https://www.cloudflare.com/cdn-cgi/trace
+
+# Alternate endpoint
+curl -s --socks5-hostname 127.0.0.1:1111 https://one.one.one.one/cdn-cgi/trace
+
+# HTTP proxy form
+curl -s -x http://127.0.0.1:1111 https://www.cloudflare.com/cdn-cgi/trace
+
+# Compare direct vs WARP exit IP
+curl -s https://ifconfig.me; echo
+curl -s --socks5-hostname 127.0.0.1:1111 https://ifconfig.me; echo
+
+# Multi-instance / load balancer
+curl -s --socks5-hostname 127.0.0.1:1110 https://www.cloudflare.com/cdn-cgi/trace | grep -E '^(ip|warp|colo)='
+curl -s --socks5-hostname 127.0.0.1:1112 https://www.cloudflare.com/cdn-cgi/trace | grep -E '^(ip|warp|colo)='
+```
+
+Key fields in the trace output:
+
+| Field | Meaning |
+|------|------|
+| `ip=...` | WARP egress IP |
+| `warp=on` | Free WARP tunnel active |
+| `warp=plus` | WARP+ active |
+| `warp=off` | Not through WARP (likely host direct) |
+| `colo=...` | Cloudflare PoP |
+
+Healthy result: `warp=on` or `warp=plus`, and the proxy exit IP differs from the host direct IP.
 
 ## 💓 Health Check & Auto-Recovery
 
@@ -133,19 +208,90 @@ docker exec -it vh-warp tail -f /var/log/warp-gost/health-check.log
 ## 📦 Docker Run
 
 ```bash
+# Single instance
 docker run -d \
   --name vh-warp \
   --restart=always \
+  --memory=4g \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --device=/dev/net/tun \
   -p 1111:1111 \
   --sysctl net.ipv4.conf.all.src_valid_mark=1 \
   -v warp-data:/var/lib/cloudflare-warp \
-  uxiaohan/vh-warp:latest
+  ghcr.io/lazzman/vh-warp:latest
+
+# 3 instances + load balancer
+docker run -d \
+  --name vh-warp \
+  --restart=always \
+  --memory=4g \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --cap-add=SYS_ADMIN \
+  --device=/dev/net/tun \
+  -p 1110-1113:1110-1113 \
+  --sysctl net.ipv4.conf.all.src_valid_mark=1 \
+  --sysctl net.ipv4.ip_forward=1 \
+  -e INSTANCE_COUNT=3 \
+  -e BASE_PORT=1111 \
+  -e LB_PORT=1110 \
+  -e LB_STRATEGY=round \
+  -v warp-data:/var/lib/cloudflare-warp \
+  ghcr.io/lazzman/vh-warp:latest
 ```
 
 > Default timezone is `Asia/Shanghai`. Override with `-e TZ=Europe/London`. After WARP connects, all DNS traffic goes through the tunnel — no extra system DNS config needed.
+
+### Environment variables
+
+| Variable | Default | Description |
+|------|------|------|
+| `INSTANCE_COUNT` | `1` | Number of instances (1–32) |
+| `BASE_PORT` | `1111` | Direct port for instance 0 (then +1 each) |
+| `LB_PORT` | `1110` | Load balancer listen port |
+| `LB_STRATEGY` | `round` | `round` / `random` / `hash` / `sticky` |
+| `LB_ENABLED` | `auto` | `auto` enables LB when count>1; `1`/`0` forces |
+| `HEALTH_CHECK_INTERVAL` | `60` | Health check interval (seconds) |
+| `HEALTH_SOFT_FAILURES` | `3` | Failures before soft reconnect |
+| `HEALTH_FALLBACK_AFTER` | `600` | Seconds before Free fallback |
+| `UPSTREAM_SOCKS5` | _(empty)_ | Optional upstream SOCKS5 for WARP dial (`socks5://user:pass@host:port`) |
+| `UPSTREAM_SOCKS5_UDP` | `udp` | `udp` or `tcp`; MASQUE needs real UDP |
+| `UPSTREAM_MTU` | `1280` | TUN MTU for hev-socks5-tunnel |
+| `GOST_IDLE_TIMEOUT` | `120s` | GOST idle connection timeout |
+| `GOST_READ_BUFFER` | `32768` | GOST per-conn read buffer (bytes) |
+| `GOST_WRITE_BUFFER` | `32768` | GOST per-conn write buffer (bytes) |
+| `GOST_BACKLOG` | `1024` | GOST listen backlog |
+| `LB_IDLE_TIMEOUT` | `120` | LB relay idle timeout (seconds) |
+
+### Memory sizing
+
+Each instance runs a full `warp-svc` + dual `gost` (in-netns + host forward). Memory is mostly **baseline**, not live connections.
+
+| `INSTANCE_COUNT` | Typical RSS (after traffic) | Suggested `--memory` / `mem_limit` |
+|------------------|-----------------------------|-----------------------------------|
+| 1 | 0.3–0.6 GB | `1g` |
+| 3 | 1.0–1.5 GB | `2g` |
+| 5 | 1.5–2.5 GB | `3g` |
+| 10 | 2.5–3.5 GB | `4g` (compose default) |
+| 16+ | ≈ 0.3 GB × N | `6g+` |
+
+> Compose default `mem_limit: 4g` is a **cap**, not a reservation. Raise it if `docker stats` approaches the limit; lower instance count is the main way to save RAM. `warp-svc` RSS rarely shrinks without process restart.
+
+### Upstream SOCKS5 (WARP dial via node)
+
+Optional: build the WARP tunnel **through** a SOCKS5 node (`TUN → hev → SOCKS5`).
+
+```bash
+# .env
+UPSTREAM_SOCKS5=socks5://user:pass@192.168.1.2:1086
+```
+
+Final app exit IP remains **Cloudflare WARP**, not the node IP. Node must support SOCKS5 UDP. Verify with `poc/upstream-socks5-tun-poc.sh`.
+
+```bash
+docker exec vh-warp upstream-setup status
+```
 
 ## 🩺 Troubleshooting
 
@@ -184,15 +330,17 @@ docker exec -it vh-warp vhwarp
 - 🖥️ **多架构适配** — amd64 / arm64，服务器、软路由、树莓派均可运行
 - 📏 **日志可控** — 自动轮转保留最新 3MB，适合低内存环境
 - 🩺 **Docker 健康检查** — 内置 HEALTHCHECK 上报代理状态，容器内守护进程负责恢复
-- 🚅 **GOST 优化** — UDP 代理、Nagle 禁用、读写缓冲区 64KB、TCP keepalive，适配软路由场景
+- 🚅 **GOST 优化** — UDP 代理、Nagle 禁用、读写缓冲 32KB、空闲 120s 回收、TCP keepalive（多实例内存友好默认）
+- 🧩 **多实例** — `INSTANCE_COUNT` 启动 N 套隔离的 WARP+GOST（netns），端口自动递增
+- ⚖️ **负载均衡** — 统一入口 `1110`，支持轮询/随机/哈希/粘性；`socks5h://{id}@host:1110` 固定后端
 
 ## 🚀 快速开始
 
-### 🐳 直接拉取（推荐）
+### 🐳 直接拉取 GHCR（推荐）
 
 ```bash
 # 下载 docker-compose.yml
-wget https://raw.githubusercontent.com/uxiaohan/vh-warp/main/docker-compose.yml
+wget https://raw.githubusercontent.com/lazzman/vh-warp/main/docker-compose.yml
 # 启动
 docker compose up -d
 ```
@@ -200,7 +348,7 @@ docker compose up -d
 ### 🔨 本地构建
 
 ```bash
-git clone https://github.com/uxiaohan/vh-warp.git
+git clone https://github.com/lazzman/vh-warp.git
 cd vh-warp
 docker compose -f docker-compose.build.yml build
 docker compose -f docker-compose.build.yml up -d
@@ -246,14 +394,91 @@ docker exec -it vh-warp vhwarp
 
 ## 🌐 使用代理
 
-局域网设备配置代理地址即可：
+### 单实例（默认）
 
 ```
 SOCKS5:  192.168.x.x:1111
 HTTP:    192.168.x.x:1111
 ```
 
-> 端口 1111 为 Mixed 模式，同一端口同时支持 HTTP 和 SOCKS5，客户端无需区分协议类型。已启用 UDP 代理，支持 QUIC/HTTP3、游戏、WebRTC 等场景。
+> 端口 1111 为 Mixed 模式，同一端口同时支持 HTTP 和 SOCKS5。已启用 UDP 代理。
+
+### 多实例 + 负载均衡
+
+```bash
+# .env 或 compose environment
+INSTANCE_COUNT=3
+BASE_PORT=1111
+LB_PORT=1110
+LB_STRATEGY=round   # round | random | hash | sticky
+```
+
+| 访问方式 | 地址 | 说明 |
+|------|------|------|
+| 负载均衡入口 | `主机:1110` | 在健康实例间分发 |
+| 实例 0 直连 | `主机:1111` | 固定走实例 0 |
+| 实例 1 直连 | `主机:1112` | 固定走实例 1 |
+| 实例 N 直连 | `主机:1111+N` | 固定走实例 N |
+
+**粘性代理**（同一 id → 同一后端）：
+
+```bash
+# SOCKS5：用户名即粘性 id（密码任意/可空）
+socks5h://session-alice@192.168.x.x:1110
+socks5h://42@192.168.x.x:1110
+
+# HTTP 代理
+http://session-alice@192.168.x.x:1110
+```
+
+只要带了用户名/id，就会按 id 哈希固定到后端，与 `LB_STRATEGY` 无关；不带用户名时按 round/random/hash（客户端 IP）调度。
+
+**数据隔离**：多实例注册数据位于 `/var/lib/cloudflare-warp/instances/<id>/`（单实例仍使用 volume 根目录，兼容旧数据）。
+
+```bash
+# 配置指定实例
+docker exec -it vh-warp vhwarp -i 1
+
+# 三实例示例
+INSTANCE_COUNT=3 docker compose up -d
+```
+
+> 多实例依赖网络命名空间（`CAP_SYS_ADMIN` + `ip_forward`）。若 netns 创建失败，可在 compose 中临时加 `privileged: true` 排查。
+
+### 验证 WARP 出口 IP
+
+代理启动后，可用以下命令确认流量已经走 Cloudflare WARP：
+
+```bash
+# 主推荐（与容器内健康检测相同）
+curl -s --socks5-hostname 127.0.0.1:1111 https://www.cloudflare.com/cdn-cgi/trace
+
+# 备用端点
+curl -s --socks5-hostname 127.0.0.1:1111 https://one.one.one.one/cdn-cgi/trace
+
+# HTTP 代理写法
+curl -s -x http://127.0.0.1:1111 https://www.cloudflare.com/cdn-cgi/trace
+
+# 对比直连与 WARP 出口 IP
+curl -s https://ifconfig.me; echo
+curl -s --socks5-hostname 127.0.0.1:1111 https://ifconfig.me; echo
+
+# 多实例 / 负载均衡
+curl -s --socks5-hostname 127.0.0.1:1110 https://www.cloudflare.com/cdn-cgi/trace | grep -E '^(ip|warp|colo)='
+curl -s --socks5-hostname 127.0.0.1:1112 https://www.cloudflare.com/cdn-cgi/trace | grep -E '^(ip|warp|colo)='
+```
+
+trace 输出关键字段：
+
+| 字段 | 含义 |
+|------|------|
+| `ip=...` | WARP 出口 IP |
+| `warp=on` | Free WARP 隧道已生效 |
+| `warp=plus` | WARP+ 已生效 |
+| `warp=off` | 未走 WARP（可能是主机直连） |
+| `colo=...` | Cloudflare 机房 |
+
+正常判定：`warp=on` 或 `warp=plus`，且代理出口 IP 与本机直连 IP 不同。
 
 ## 💓 心跳检测与自愈
 
@@ -302,19 +527,94 @@ docker exec -it vh-warp tail -f /var/log/warp-gost/health-check.log
 ## 📦 Docker Run
 
 ```bash
+# 单实例
 docker run -d \
   --name vh-warp \
   --restart=always \
+  --memory=4g \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --device=/dev/net/tun \
   -p 1111:1111 \
   --sysctl net.ipv4.conf.all.src_valid_mark=1 \
   -v warp-data:/var/lib/cloudflare-warp \
-  uxiaohan/vh-warp:latest
+  ghcr.io/lazzman/vh-warp:latest
+
+# 三实例 + 负载均衡
+docker run -d \
+  --name vh-warp \
+  --restart=always \
+  --memory=4g \
+  --cap-add=NET_ADMIN \
+  --cap-add=NET_RAW \
+  --cap-add=SYS_ADMIN \
+  --device=/dev/net/tun \
+  -p 1110-1113:1110-1113 \
+  --sysctl net.ipv4.conf.all.src_valid_mark=1 \
+  --sysctl net.ipv4.ip_forward=1 \
+  -e INSTANCE_COUNT=3 \
+  -e BASE_PORT=1111 \
+  -e LB_PORT=1110 \
+  -e LB_STRATEGY=round \
+  -v warp-data:/var/lib/cloudflare-warp \
+  ghcr.io/lazzman/vh-warp:latest
 ```
 
 > 镜像默认时区 `Asia/Shanghai`，可通过 `-e TZ=Europe/London` 覆盖。WARP 连接后 DNS 全部走隧道，无需额外配系统 DNS。
+
+### 环境变量一览
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `INSTANCE_COUNT` | `1` | 实例数量（1–32） |
+| `BASE_PORT` | `1111` | 实例 0 直连端口，其后递增 |
+| `LB_PORT` | `1110` | 负载均衡入口 |
+| `LB_STRATEGY` | `round` | `round` / `random` / `hash` / `sticky` |
+| `LB_ENABLED` | `auto` | `auto` 在多实例时启用；`1`/`0` 强制 |
+| `HEALTH_CHECK_INTERVAL` | `60` | 健康检测间隔（秒） |
+| `HEALTH_SOFT_FAILURES` | `3` | 触发软重连的连续失败次数 |
+| `HEALTH_FALLBACK_AFTER` | `600` | 回退 Free 的持续失败时间（秒） |
+| `UPSTREAM_SOCKS5` | 空 | 可选，WARP 建连走的上游 SOCKS5 |
+| `UPSTREAM_SOCKS5_UDP` | `udp` | `udp` / `tcp`；MASQUE 需要真 UDP |
+| `UPSTREAM_MTU` | `1280` | 上游 TUN MTU |
+| `GOST_IDLE_TIMEOUT` | `120s` | GOST 空闲连接超时 |
+| `GOST_READ_BUFFER` | `32768` | GOST 单连接读缓冲（字节） |
+| `GOST_WRITE_BUFFER` | `32768` | GOST 单连接写缓冲（字节） |
+| `GOST_BACKLOG` | `1024` | GOST listen backlog |
+| `LB_IDLE_TIMEOUT` | `120` | LB 转发空闲超时（秒） |
+
+### 内存估算
+
+每个实例是完整的 `warp-svc` + 双 `gost`（netns 内 + 主机转发）。内存主要是**进程基线**，不是当前连接数。
+
+| `INSTANCE_COUNT` | 典型 RSS（跑过流量后） | 建议 `--memory` / `mem_limit` |
+|------------------|-------------------------|------------------------------|
+| 1 | 0.3–0.6 GB | `1g` |
+| 3 | 1.0–1.5 GB | `2g` |
+| 5 | 1.5–2.5 GB | `3g` |
+| 10 | 2.5–3.5 GB | `4g`（compose 默认） |
+| 16+ | ≈ 0.3 GB × N | `6g+` |
+
+> compose 默认 `mem_limit: 4g` 是**上限不是预留**。`docker stats` 接近上限就上调；想省内存优先减实例数。`warp-svc` 的 RSS 通常不重启进程就不会掉下来。
+
+### 上游 SOCKS5（经节点建立 WARP 隧道）
+
+可选：容器出站经 `TUN → hev-socks5-tunnel → SOCKS5 节点` 再连 Cloudflare。
+
+```bash
+# .env
+UPSTREAM_SOCKS5=socks5://user:pass@192.168.1.2:1086
+```
+
+| 会变 | 不变 |
+|------|------|
+| WARP 注册/握手路径（走节点） | 业务最终出口 IP（仍是 Cloudflare WARP） |
+
+节点需支持 **SOCKS5 UDP**。可先用 `poc/upstream-socks5-tun-poc.sh` 验证。
+
+```bash
+docker exec vh-warp upstream-setup status
+```
 
 ## 🩺 故障排查
 

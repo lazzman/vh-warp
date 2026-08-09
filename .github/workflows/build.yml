@@ -1,7 +1,14 @@
 name: Build and Push Docker Image
 
 on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
   workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build:
@@ -13,16 +20,24 @@ jobs:
 
       - name: Generate timestamp tag
         id: timestamp
-        run: echo "tag=$(TZ='Asia/Shanghai' date +'%Y.%m.%d_%H.%M')" >> $GITHUB_OUTPUT
+        run: echo "tag=$(TZ='Asia/Shanghai' date +'%Y.%m.%d_%H.%M')" >> "$GITHUB_OUTPUT"
+
+      - name: Lowercase image name
+        id: image
+        run: |
+          owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "name=ghcr.io/${owner}/vh-warp" >> "$GITHUB_OUTPUT"
 
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: uxiaohan/vh-warp
+          images: ${{ steps.image.outputs.name }}
           tags: |
             type=raw,value=${{ steps.timestamp.outputs.tag }}
             type=raw,value=latest
+            type=ref,event=tag
+            type=sha,prefix=
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -30,7 +45,16 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 可选：在仓库 Settings → Secrets 配置 DOCKER_HUB_USER / DOCKER_HUB_TOKEN 后同步推 Docker Hub
       - name: Login to Docker Hub
+        if: ${{ vars.ENABLE_DOCKERHUB == 'true' }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_HUB_USER }}
@@ -45,3 +69,5 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
