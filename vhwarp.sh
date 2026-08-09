@@ -4,24 +4,97 @@ LOG_FILE="/var/log/warp-gost/vhwarp.log"
 mkdir -p /var/log/warp-gost
 source /usr/local/bin/warp-common.sh
 
+# 解析 -i / --instance
+INSTANCE_ID="${INSTANCE_ID:-}"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -i|--instance)
+            INSTANCE_ID="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "用法: vhwarp [-i 实例ID]"
+            echo "  环境变量: INSTANCE_COUNT BASE_PORT LB_PORT LB_STRATEGY"
+            exit 0
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
 log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
-check_warp_svc() {
-    if ! pgrep -x "warp-svc" > /dev/null; then
-        echo "❌ 错误: warp-svc 未运行"
+# 选择实例（多实例时）
+select_instance() {
+    if [ "$INSTANCE_COUNT" -eq 1 ]; then
+        INSTANCE_ID=0
+        set_instance_context 0
+        return 0
+    fi
+    if [ -n "$INSTANCE_ID" ]; then
+        if ! [[ "$INSTANCE_ID" =~ ^[0-9]+$ ]] || [ "$INSTANCE_ID" -ge "$INSTANCE_COUNT" ]; then
+            echo "❌ 无效实例 ID: ${INSTANCE_ID}（有效范围 0-$((INSTANCE_COUNT - 1))）"
+            return 1
+        fi
+        set_instance_context "$INSTANCE_ID"
+        return 0
+    fi
+
+    echo ""
+    echo "  当前共 ${INSTANCE_COUNT} 个实例："
+    local id
+    for id in $(instance_id_list); do
+        echo "    [${id}] 端口 $(instance_port "$id")  数据 $(instance_data_dir "$id")"
+    done
+    echo "    [a] 全部实例（逐个配置）"
+    echo ""
+    read -r -p "  选择实例 ID [0-$((INSTANCE_COUNT - 1))/a]: " choice
+    if [ "$choice" = "a" ] || [ "$choice" = "A" ]; then
+        INSTANCE_ID="all"
+        return 0
+    fi
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -ge "$INSTANCE_COUNT" ]; then
+        echo "❌ 无效选择"
         return 1
+    fi
+    INSTANCE_ID="$choice"
+    set_instance_context "$INSTANCE_ID"
+}
+
+# 通过 instance-ctl 执行 warp-cli，兼容单/多实例
+wcli() {
+    /usr/local/bin/instance-ctl.sh exec "${CURRENT_INSTANCE_ID:-0}" warp-cli --accept-tos "$@"
+}
+
+check_warp_svc() {
+    if [ "$INSTANCE_COUNT" -eq 1 ]; then
+        if ! pgrep -x "warp-svc" > /dev/null; then
+            echo "❌ 错误: warp-svc 未运行"
+            return 1
+        fi
+    else
+        local ns
+        ns="$(instance_netns "${CURRENT_INSTANCE_ID:-0}")"
+        if ! ip netns exec "$ns" pgrep -x warp-svc >/dev/null 2>&1; then
+            # 尝试 nsenter
+            if ! /usr/local/bin/instance-ctl.sh exec "${CURRENT_INSTANCE_ID:-0}" pgrep -x warp-svc >/dev/null 2>&1; then
+                echo "❌ 错误: 实例 ${CURRENT_INSTANCE_ID} 的 warp-svc 未运行"
+                return 1
+            fi
+        fi
     fi
     return 0
 }
 
-wait_for_connected() {
+wait_for_connected_local() {
     local max_attempts=${1:-60}
     local count=0
     while [ $count -lt $max_attempts ]; do
         local status
-        status=$(warp-cli --accept-tos status 2>/dev/null)
+        status=$(wcli status 2>/dev/null)
         echo "$status" >> "$LOG_FILE"
         if echo "$status" | grep -q "Connected" 2>/dev/null; then
             return 0
@@ -33,10 +106,10 @@ wait_for_connected() {
     return 1
 }
 
-wait_for_registration() {
+wait_for_registration_local() {
     local i=0
     while [ $i -lt 30 ]; do
-        if warp-cli --accept-tos registration show 2>/dev/null | grep -q "Device ID"; then
+        if wcli registration show 2>/dev/null | grep -q "Device ID"; then
             echo ""
             return 0
         fi
@@ -48,15 +121,38 @@ wait_for_registration() {
     return 1
 }
 
+has_registration_local() {
+    wcli registration show 2>/dev/null | grep -q "Device ID"
+}
+
+get_account_type_local() {
+    local info
+    info=$(wcli registration show 2>/dev/null)
+    if echo "$info" | grep -q "Organization"; then
+        echo "Teams"
+    elif echo "$info" | grep -qE "Premium|Unlimited|WARP[+]"; then
+        echo "WARP+"
+    elif echo "$info" | grep -q "Device ID"; then
+        echo "Free"
+    else
+        echo "Unknown"
+    fi
+}
+
 clean_config() {
-    echo "🧹 正在清理旧配置..."
-    log "清理旧配置..."
-    warp-cli --accept-tos disconnect > /dev/null 2>&1 || true
-    if has_registration; then
-        warp-cli --accept-tos registration delete >> "$LOG_FILE" 2>&1 || true
-        if ! wait_for_registration_deleted 30; then
+    echo "🧹 正在清理旧配置 (实例 ${CURRENT_INSTANCE_ID})..."
+    log "清理旧配置 instance=${CURRENT_INSTANCE_ID}"
+    wcli disconnect > /dev/null 2>&1 || true
+    if has_registration_local; then
+        wcli registration delete >> "$LOG_FILE" 2>&1 || true
+        local i=0
+        while [ $i -lt 30 ]; do
+            has_registration_local || break
+            sleep 1
+            i=$((i + 1))
+        done
+        if has_registration_local; then
             echo "❌ 旧注册删除超时，请稍后重试"
-            log "旧注册删除未在 30 秒内完成"
             return 1
         fi
     fi
@@ -64,6 +160,7 @@ clean_config() {
 }
 
 begin_configuration() {
+    set_instance_context "${CURRENT_INSTANCE_ID:-0}"
     if ! acquire_warp_lock 30; then
         echo "❌ 另一个 WARP 配置或恢复操作正在进行，请稍后重试"
         return 1
@@ -71,22 +168,41 @@ begin_configuration() {
 }
 
 finish_configuration() {
-    echo "MONITORING" > /var/log/warp-gost/health-state.txt
-    rm -f /var/log/warp-gost/health-failure-since.txt
+    mkdir -p "$(instance_run_dir "${CURRENT_INSTANCE_ID:-0}")"
+    echo "MONITORING" > "$(instance_run_dir "${CURRENT_INSTANCE_ID:-0}")/health-state.txt"
+    rm -f "$(instance_run_dir "${CURRENT_INSTANCE_ID:-0}")/health-failure-since.txt"
     release_warp_lock
+}
+
+run_on_instances() {
+    local action="$1"
+    if [ "$INSTANCE_ID" = "all" ]; then
+        local id
+        for id in $(instance_id_list); do
+            echo ""
+            echo "════════ 实例 ${id} ════════"
+            INSTANCE_ID="$id"
+            set_instance_context "$id"
+            "$action"
+        done
+        INSTANCE_ID="all"
+    else
+        set_instance_context "${INSTANCE_ID:-0}"
+        "$action"
+    fi
 }
 
 configure_free() {
     echo ""
-echo "📡 正在配置 WARP 免费版..."
-echo "📡 协议: MASQUE"
+    echo "📡 正在配置 WARP 免费版 (实例 ${CURRENT_INSTANCE_ID})..."
+    echo "📡 协议: MASQUE  端口: $(instance_port "${CURRENT_INSTANCE_ID}")"
 
     if ! check_warp_svc; then
         return 1
     fi
 
     local current_type confirm
-    current_type=$(get_account_type)
+    current_type=$(get_account_type_local)
     if [ "$current_type" = "WARP+" ] || [ "$current_type" = "Teams" ]; then
         echo "⚠️ 当前账户为 ${current_type}，切换到 Free 将删除当前设备注册。"
         read -r -p "确认继续？(y/N): " confirm
@@ -102,41 +218,41 @@ echo "📡 协议: MASQUE"
         finish_configuration
         return 1
     fi
-    log "开始配置 WARP Free"
+    log "开始配置 WARP Free instance=${CURRENT_INSTANCE_ID}"
 
-    warp-cli --accept-tos tunnel protocol set MASQUE > /dev/null 2>&1
+    wcli tunnel protocol set MASQUE > /dev/null 2>&1
     sleep 2
 
-    warp-cli --accept-tos registration new > /dev/null 2>&1
-    if ! wait_for_registration; then
+    wcli registration new > /dev/null 2>&1
+    if ! wait_for_registration_local; then
         echo "❌ 注册失败"
-        log "WARP Free 注册失败"
         finish_configuration
         return 1
     fi
 
-    warp-cli --accept-tos mode warp+doh > /dev/null 2>&1
+    wcli mode warp+doh > /dev/null 2>&1
     sleep 1
 
-    warp-cli --accept-tos connect > /dev/null 2>&1
+    wcli connect > /dev/null 2>&1
     echo -n "⏳ 正在连接（最长等待 3 分钟）..."
-    if wait_for_connected 60; then
+    if wait_for_connected_local 60; then
         echo ""
-        echo "✅ WARP 免费版连接成功 (MASQUE)"
-        log "WARP Free 配置成功"
-        show_status
+        echo "✅ 实例 ${CURRENT_INSTANCE_ID} WARP 免费版连接成功 (MASQUE)"
+        log "WARP Free 配置成功 instance=${CURRENT_INSTANCE_ID}"
+        show_status_one
 
-        echo ""
-        echo "🔍 检查 GOST 代理..."
-        if /usr/local/bin/gost-setup.sh start; then
-            echo "✅ GOST 代理已启动，端口: 1111"
-        else
-            echo "❌ GOST 代理启动失败"
+        if [ "$INSTANCE_COUNT" -eq 1 ]; then
+            echo ""
+            echo "🔍 检查 GOST 代理..."
+            if /usr/local/bin/gost-setup.sh start 0; then
+                echo "✅ GOST 代理已启动，端口: $(instance_port 0)"
+            else
+                echo "❌ GOST 代理启动失败"
+            fi
         fi
     else
         echo ""
         echo "❌ WARP 连接失败"
-        log "WARP Free 连接失败"
         finish_configuration
         return 1
     fi
@@ -145,75 +261,55 @@ echo "📡 协议: MASQUE"
 
 configure_teams() {
     echo ""
-    echo "🔧 正在配置 Teams / Zero Trust..."
+    echo "🔧 正在配置 Teams / Zero Trust (实例 ${CURRENT_INSTANCE_ID})..."
     echo "🔗 从 https://<团队名>.cloudflareaccess.com/warp 获取 Token URL"
 
     if ! check_warp_svc; then
         return 1
     fi
 
-    read -p "请输入 Teams Token URL: " token_url
-
+    read -r -p "请输入 Teams Token URL: " token_url
     if [ -z "$token_url" ]; then
         echo "❌ Token URL 不能为空"
         return 1
     fi
 
     begin_configuration || return 1
-
     if ! clean_config; then
         finish_configuration
         return 1
     fi
-    log "开始配置 Teams"
+    log "开始配置 Teams instance=${CURRENT_INSTANCE_ID}"
 
     echo "⏳ 正在注册 Teams Token..."
-    if ! warp-cli --accept-tos registration token "$token_url" > /dev/null 2>&1; then
+    if ! wcli registration token "$token_url" > /dev/null 2>&1; then
         echo "❌ Teams Token 注册失败，Token 可能已过期"
-        log "Teams Token 注册命令失败"
         finish_configuration
         return 1
     fi
-    if ! wait_for_registration; then
+    if ! wait_for_registration_local; then
         echo "❌ Teams 注册超时"
-        log "Teams 注册未产生 Device ID"
         finish_configuration
         return 1
     fi
-    if [ "$(get_account_type)" != "Teams" ]; then
-        echo "❌ 注册未关联到 Teams Organization，请重新获取 Token URL"
-        log "Teams 账户类型验证失败"
+    if [ "$(get_account_type_local)" != "Teams" ]; then
+        echo "❌ 注册未关联到 Teams Organization"
         finish_configuration
         return 1
     fi
 
-    warp-cli --accept-tos mode warp+doh > /dev/null 2>&1
+    wcli mode warp+doh > /dev/null 2>&1
     sleep 1
-
-    warp-cli --accept-tos connect > /dev/null 2>&1
+    wcli connect > /dev/null 2>&1
     echo -n "⏳ 正在连接（最长等待 5 分钟）..."
-    if wait_for_connected 100; then
+    if wait_for_connected_local 100; then
         echo ""
-        echo "✅ Teams 连接成功"
-        log "Teams 配置成功"
-        show_status
-
-        echo ""
-        echo "🔍 检查 GOST 代理..."
-        if /usr/local/bin/gost-setup.sh start; then
-            echo "✅ GOST 代理已启动，端口: 1111"
-        else
-            echo "❌ GOST 代理启动失败"
-        fi
+        echo "✅ 实例 ${CURRENT_INSTANCE_ID} Teams 连接成功"
+        show_status_one
     else
         echo ""
         echo "❌ Teams 连接失败"
-        echo ""
-        echo "当前状态:"
-        warp-cli --accept-tos status
-        echo ""
-        echo "日志: $LOG_FILE"
-        log "Teams 连接失败"
+        wcli status || true
         finish_configuration
         return 1
     fi
@@ -222,86 +318,70 @@ configure_teams() {
 
 configure_plus() {
     echo ""
-    echo "💎 正在配置 WARP+..."
+    echo "💎 正在配置 WARP+ (实例 ${CURRENT_INSTANCE_ID})..."
 
     if ! check_warp_svc; then
         return 1
     fi
 
-    read -p "请输入 WARP+ License Key: " license_key
-
+    read -r -p "请输入 WARP+ License Key: " license_key
     if [ -z "$license_key" ]; then
         echo "❌ License Key 不能为空"
         return 1
     fi
 
     begin_configuration || return 1
-
     if ! clean_config; then
         finish_configuration
         return 1
     fi
-    log "开始配置 WARP+"
+    log "开始配置 WARP+ instance=${CURRENT_INSTANCE_ID}"
 
-    warp-cli --accept-tos registration new > /dev/null 2>&1
-    if ! wait_for_registration; then
+    wcli registration new > /dev/null 2>&1
+    if ! wait_for_registration_local; then
         echo "❌ 注册失败"
-        log "WARP+ 注册失败"
         finish_configuration
         return 1
     fi
 
-    if ! warp-cli --accept-tos registration license "$license_key" > /dev/null 2>&1; then
-        echo "❌ License 应用失败，请检查 Key 或设备数量限制"
-        log "WARP+ License 命令失败"
+    if ! wcli registration license "$license_key" > /dev/null 2>&1; then
+        echo "❌ License 应用失败"
         finish_configuration
         return 1
     fi
     sleep 2
-    if [ "$(get_account_type)" != "WARP+" ]; then
-        echo "❌ License 未生效，当前注册不是 WARP+"
-        log "WARP+ 账户类型验证失败"
+    if [ "$(get_account_type_local)" != "WARP+" ]; then
+        echo "❌ License 未生效"
         finish_configuration
         return 1
     fi
 
-    warp-cli --accept-tos mode warp+doh > /dev/null 2>&1
+    wcli mode warp+doh > /dev/null 2>&1
     sleep 1
-
-    warp-cli --accept-tos connect > /dev/null 2>&1
+    wcli connect > /dev/null 2>&1
     echo -n "⏳ 正在连接（最长等待 3 分钟）..."
-    if wait_for_connected 60; then
+    if wait_for_connected_local 60; then
         echo ""
-        echo "✅ WARP+ 连接成功"
-        log "WARP+ 配置成功"
-        show_status
-
-        echo ""
-        echo "🔍 检查 GOST 代理..."
-        if /usr/local/bin/gost-setup.sh start; then
-            echo "✅ GOST 代理已启动，端口: 1111"
-        else
-            echo "❌ GOST 代理启动失败"
-        fi
+        echo "✅ 实例 ${CURRENT_INSTANCE_ID} WARP+ 连接成功"
+        show_status_one
     else
         echo ""
         echo "❌ WARP+ 连接失败"
-        log "WARP+ 连接失败"
         finish_configuration
         return 1
     fi
     finish_configuration
 }
 
-show_status() {
+show_status_one() {
     echo ""
     echo "========================================"
-    echo "  📊 当前状态"
+    echo "  📊 实例 ${CURRENT_INSTANCE_ID} 状态  端口:$(instance_port "${CURRENT_INSTANCE_ID}")"
     echo "========================================"
-    warp-cli --accept-tos status
+    wcli status 2>/dev/null || echo "(无法获取 status)"
     echo ""
     local reg_info
-    reg_info=$(warp-cli --accept-tos registration show 2>/dev/null)
+    reg_info=$(wcli registration show 2>/dev/null)
     if echo "$reg_info" | grep -q "Organization"; then
         echo "👥 账户类型: Teams (Zero Trust)"
     elif echo "$reg_info" | grep -qE "Premium|Unlimited|WARP[+]"; then
@@ -311,50 +391,57 @@ show_status() {
     else
         echo "⭕ 账户类型: 未配置"
     fi
-    echo ""
-    if pgrep -x "gost" > /dev/null; then
-        echo "✅ GOST 代理: 运行中（端口 1111）"
-    else
-        echo "⭕ GOST 代理: 已停止"
-    fi
+    echo "📂 数据目录: $(instance_data_dir "${CURRENT_INSTANCE_ID}")"
     echo "========================================"
+}
+
+show_status() {
+    if [ "$INSTANCE_COUNT" -eq 1 ]; then
+        set_instance_context 0
+        show_status_one
+    else
+        local id
+        for id in $(instance_id_list); do
+            set_instance_context "$id"
+            show_status_one
+        done
+    fi
     echo ""
+    if lb_should_enable; then
+        /usr/local/bin/lb-setup.sh status 2>/dev/null || true
+    fi
+    /usr/local/bin/instance-ctl.sh status 2>/dev/null || true
 }
 
 reset_config() {
-    echo "🔄 正在重置配置..."
-
+    echo "🔄 正在重置配置 (实例 ${CURRENT_INSTANCE_ID})..."
     if ! check_warp_svc; then
         return 1
     fi
-
-    read -p "确认重置？(y/n): " confirm
+    read -r -p "确认重置实例 ${CURRENT_INSTANCE_ID}？(y/n): " confirm
     if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
         echo "↩️ 已取消"
         return 0
     fi
-
     begin_configuration || return 1
-
-    log "重置配置"
-    warp-cli --accept-tos disconnect > /dev/null 2>&1 || true
+    log "重置配置 instance=${CURRENT_INSTANCE_ID}"
+    wcli disconnect > /dev/null 2>&1 || true
     sleep 2
-    warp-cli --accept-tos registration delete > /dev/null 2>&1 || true
+    wcli registration delete > /dev/null 2>&1 || true
     sleep 2
-
-    echo "✅ 配置已重置"
+    echo "✅ 实例 ${CURRENT_INSTANCE_ID} 配置已重置"
     finish_configuration
 }
 
 pushdeer_menu() {
-    local pushkey_file="/var/lib/cloudflare-warp/pushdeer.key"
+    local pushkey_file="${WARP_DATA_ROOT}/pushdeer.key"
 
     while true; do
         clear
         echo ""
-echo "========================================"
-echo "       🔔 PushDeer 断线通知"
-echo "========================================"
+        echo "========================================"
+        echo "       🔔 PushDeer 断线通知"
+        echo "========================================"
         echo ""
         local current_key=""
         if [ -f "$pushkey_file" ]; then
@@ -371,47 +458,44 @@ echo "========================================"
         echo "0) 返回主菜单"
         echo ""
         echo "========================================"
-        read -p "请选择 [0-3]: " choice
+        read -r -p "请选择 [0-3]: " choice
 
         case $choice in
             1)
                 echo ""
-                read -p "请输入 PushDeer PushKey: " new_key
+                read -r -p "请输入 PushDeer PushKey: " new_key
                 if [ -n "$new_key" ]; then
                     echo "$new_key" > "$pushkey_file"
                     echo "📥 PushKey 已保存。"
-                    echo "📨 正在发送测试通知..."
-                    local encoded_title
-                    encoded_title=$(echo -n "vh-warp 已就绪" | python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.stdin.read()))" 2>/dev/null || echo "vh-warp")
-                    local encoded_body
-                    encoded_body=$(echo -n "PushDeer 通知已成功配置！$'\n'从现在开始，WARP 每次断线、重连、急救我都会第一时间告诉你！$'\n'$'\n'祝你网络永不断线！" | python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.stdin.read()))" 2>/dev/null || echo "configured")
-                    curl -s --max-time 10 "https://api2.pushdeer.com/message/push?pushkey=${new_key}&text=${encoded_title}&desp=${encoded_body}" > /dev/null 2>&1
+                    curl -s --max-time 10 --get \
+                        --data-urlencode "pushkey=${new_key}" \
+                        --data-urlencode "text=vh-warp 已就绪" \
+                        --data-urlencode "desp=PushDeer 通知已成功配置！" \
+                        "https://api2.pushdeer.com/message/push" > /dev/null 2>&1
                     echo "📨 测试通知已发送！"
                     log "PushDeer 已配置"
                 fi
-                read -p "按回车键继续..."
+                read -r -p "按回车键继续..."
                 ;;
             2)
                 if [ ! -f "$pushkey_file" ]; then
                     echo ""
                     echo "⚠️ 尚未配置 PushKey，请先设置。"
                 else
-                    echo ""
-                    echo "📨 正在发送测试通知..."
                     local key
                     key=$(cat "$pushkey_file")
-                    local test_title
-                    test_title=$(echo -n "测试通知" | python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.stdin.read()))" 2>/dev/null || echo "test")
-                    local test_body
-                    test_body=$(echo -n "如果你收到这条消息，说明 PushDeer 工作正常！$'\n'$'\n'vh-warp 断线监控一切就绪！" | python3 -c "import sys,urllib.parse; print(urllib.parse.quote(sys.stdin.read()))" 2>/dev/null || echo "test ok")
-                    curl -s --max-time 10 "https://api2.pushdeer.com/message/push?pushkey=${key}&text=${test_title}&desp=${test_body}" > /dev/null 2>&1
+                    curl -s --max-time 10 --get \
+                        --data-urlencode "pushkey=${key}" \
+                        --data-urlencode "text=测试通知" \
+                        --data-urlencode "desp=PushDeer 工作正常" \
+                        "https://api2.pushdeer.com/message/push" > /dev/null 2>&1
                     echo "📨 测试通知已发送！"
                 fi
-                read -p "按回车键继续..."
+                read -r -p "按回车键继续..."
                 ;;
             3)
                 echo ""
-                read -p "确认关闭 PushDeer 通知？(y/n): " confirm
+                read -r -p "确认关闭 PushDeer 通知？(y/n): " confirm
                 if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
                     rm -f "$pushkey_file"
                     echo "🔕 PushDeer 通知已关闭。"
@@ -419,15 +503,10 @@ echo "========================================"
                 else
                     echo "↩️ 已取消"
                 fi
-                read -p "按回车键继续..."
+                read -r -p "按回车键继续..."
                 ;;
-            0)
-                return
-                ;;
-            *)
-                echo "⚠️ 无效选择，请重新输入"
-                sleep 1
-                ;;
+            0) return ;;
+            *) echo "⚠️ 无效选择"; sleep 1 ;;
         esac
     done
 }
@@ -446,11 +525,9 @@ show_banner() {
     echo ""
     echo "  ─────────────────────────────────────────────────────────"
     echo "    ☁️  Cloudflare WARP 隐私保护 · 网络加速"
-    echo "    📂 github.com/uxiaohan/vh-warp    🕐 $current_time"
+    echo "    📂 github.com/lazzman/vh-warp    🕐 $current_time"
+    echo "    🔢 实例: ${INSTANCE_COUNT}  端口: ${BASE_PORT}-$((BASE_PORT + INSTANCE_COUNT - 1))  LB: ${LB_PORT}"
     echo "  ─────────────────────────────────────────────────────────"
-    echo ""
-    echo "  👋 欢迎使用 vh-warp！隐私保护 + 网络加速一步到位"
-    echo "     基于 Cloudflare WARP，支持 Free / Plus / Teams"
     echo ""
 }
 
@@ -485,15 +562,15 @@ show_menu() {
     }
 
     draw_line "=" "+" "+"
-menu_line "vh-warp 配置工具"
-draw_line "=" "+" "+"
-menu_line "1)  WARP 免费版       MASQUE 协议，无需账号"
-menu_line "2)  Teams / Zero Trust  输入 Token URL"
-menu_line "3)  WARP+ (License Key)  输入 License Key"
-menu_line "4)  查看当前状态"
-menu_line "5)  重置并清理配置"
-menu_line "6)  PushDeer 断线通知"
-menu_line "0)  退出"
+    menu_line "vh-warp 配置工具"
+    draw_line "=" "+" "+"
+    menu_line "1)  WARP 免费版       MASQUE 协议，无需账号"
+    menu_line "2)  Teams / Zero Trust  输入 Token URL"
+    menu_line "3)  WARP+ (License Key)  输入 License Key"
+    menu_line "4)  查看当前状态"
+    menu_line "5)  重置并清理配置"
+    menu_line "6)  PushDeer 断线通知"
+    menu_line "0)  退出"
     draw_line "=" "+" "+"
     echo ""
 }
@@ -501,14 +578,26 @@ menu_line "0)  退出"
 main() {
     while true; do
         show_menu
-        read -p "  请选择 [0-6]: " choice
+        read -r -p "  请选择 [0-6]: " choice
 
         case $choice in
-            1) configure_free ;;
-            2) configure_teams ;;
-            3) configure_plus ;;
+            1)
+                select_instance || continue
+                run_on_instances configure_free
+                ;;
+            2)
+                select_instance || continue
+                run_on_instances configure_teams
+                ;;
+            3)
+                select_instance || continue
+                run_on_instances configure_plus
+                ;;
             4) show_status ;;
-            5) reset_config ;;
+            5)
+                select_instance || continue
+                run_on_instances reset_config
+                ;;
             6) pushdeer_menu ;;
             0)
                 echo "👋 再见！"
@@ -519,7 +608,7 @@ main() {
                 sleep 1
                 ;;
         esac
-        read -p "按回车键继续..."
+        read -r -p "按回车键继续..."
     done
 }
 
