@@ -17,7 +17,7 @@ WARP_LOCK_ROOT="${WARP_LOCK_ROOT:-/var/lib/cloudflare-warp/.runtime/locks}"
 NETNS_PREFIX="${NETNS_PREFIX:-10.64}"
 INSTANCE_GOST_PORT="${INSTANCE_GOST_PORT:-1080}"
 
-# GOST 监听调优（偏内存友好；可用环境变量覆盖）
+# GOST 启动调优（偏内存友好；可用环境变量覆盖）
 # 旧默认 backlog=4096 / idle=600s / buf≈64KB，多实例下空闲 RSS 偏高
 GOST_BACKLOG="${GOST_BACKLOG:-1024}"
 GOST_IDLE_TIMEOUT="${GOST_IDLE_TIMEOUT:-120s}"
@@ -30,6 +30,69 @@ gost_listen_query() {
     echo "udp=true&nodelay=true&backlog=${GOST_BACKLOG}&readTimeout=0&idleTimeout=${GOST_IDLE_TIMEOUT}&tcpKeepAlive=true&keepAlivePeriod=${GOST_KEEPALIVE_PERIOD}&readBufferSize=${GOST_READ_BUFFER}&writeBufferSize=${GOST_WRITE_BUFFER}"
 }
 
+# PREFER_IPV6：GOST 3 YAML 的 handler 必须是 auto（mixed 会直接 fatal 退出）
+# nameserver 必须带 udp://，否则解析器不可用。
+write_gost_listen_config() {
+    local port="$1" out="$2"
+    mkdir -p "$(dirname "$out")"
+    cat > "$out" <<EOF
+services:
+- name: mixed-tcp
+  addr: ":${port}"
+  resolver: resolver-v6
+  handler:
+    type: auto
+    metadata:
+      udp: true
+      nodelay: true
+      backlog: ${GOST_BACKLOG}
+      readTimeout: 0
+      idleTimeout: ${GOST_IDLE_TIMEOUT}
+      tcpKeepAlive: true
+      keepAlivePeriod: ${GOST_KEEPALIVE_PERIOD}
+      readBufferSize: ${GOST_READ_BUFFER}
+      writeBufferSize: ${GOST_WRITE_BUFFER}
+  listener:
+    type: tcp
+    metadata:
+      backlog: ${GOST_BACKLOG}
+      keepalive: true
+- name: mixed-udp
+  addr: ":${port}"
+  resolver: resolver-v6
+  handler:
+    type: auto
+    metadata:
+      ttl: 30s
+  listener:
+    type: udp
+resolvers:
+- name: resolver-v6
+  nameservers:
+  - addr: udp://1.1.1.1:53
+    prefer: ipv6
+    timeout: 3s
+    ttl: 30s
+  - addr: udp://1.0.0.1:53
+    prefer: ipv6
+    timeout: 3s
+    ttl: 30s
+EOF
+}
+
+# 启动真正出站的 GOST（解析目标地址的那一层）。stdout=pid
+gost_start_listen() {
+    local port="$1" cfg="$2" logf="$3"
+    if prefer_ipv6_enabled; then
+        write_gost_listen_config "$port" "$cfg"
+        gost -C "$cfg" >>"$logf" 2>&1 &
+    else
+        rm -f "$cfg"
+        gost -L "mixed://0.0.0.0:${port}?$(gost_listen_query)" >>"$logf" 2>&1 &
+    fi
+    echo $!
+}
+
 # 主机侧端口转发 GOST（更轻：不设大 buffer）
 gost_forward_query() {
     echo "udp=true&nodelay=true&idleTimeout=${GOST_IDLE_TIMEOUT}&tcpKeepAlive=true&keepAlivePeriod=${GOST_KEEPALIVE_PERIOD}"
@@ -38,6 +101,9 @@ gost_forward_query() {
 WARP_CLI_TIMEOUT="${WARP_CLI_TIMEOUT:-60}"
 WARP_REGISTRATION_TIMEOUT="${WARP_REGISTRATION_TIMEOUT:-60}"
 WARP_CONNECT_TIMEOUT="${WARP_CONNECT_TIMEOUT:-180}"
+
+# 双栈出站优先 IPv6（AAAA）；不检测、不因 IPv4 出口重启
+PREFER_IPV6="${PREFER_IPV6:-0}"                   # 0 | 1
 
 # 上游 SOCKS5 TUN（可选）：WARP 建连/注册走节点；空=直连（默认）
 # 例: socks5://user:pass@192.168.1.2:1086  或  192.168.1.2:1086
@@ -89,6 +155,17 @@ lb_should_enable() {
         0|false|FALSE|no|NO|off|OFF) return 1 ;;
         *) [ "$INSTANCE_COUNT" -gt 1 ] ;;
     esac
+}
+
+env_flag_on() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+prefer_ipv6_enabled() {
+    env_flag_on "${PREFER_IPV6:-0}"
 }
 
 instance_id_list() {
@@ -182,7 +259,7 @@ write_backends_file() {
 # 按实例更新健康标记：id status(up/down)
 update_backend_health() {
     local id="$1" status="$2"
-    local meta tmp line
+    local meta tmp
     meta="$(backends_meta_file)"
     tmp="${meta}.tmp"
     mkdir -p "$(dirname "$meta")"
@@ -382,6 +459,7 @@ instance_proxy_addr() {
 
 # 经实例代理拉 cdn-cgi/trace，解析出口信息
 # 输出: ip=...|warp=...|loc=...|colo=...|http=...
+# 状态探测固定走 IPv4 目的地址，避免无 IPv6 路由时每个实例卡 8s 显示 n/a
 probe_instance_trace() {
     local id="${1:-0}"
     local timeout="${2:-10}"
@@ -397,11 +475,11 @@ probe_instance_trace() {
         return 1
     fi
     local ip warp loc colo http
-    ip="$(echo "$trace" | awk -F= '/^ip=/{print $2; exit}')"
-    warp="$(echo "$trace" | awk -F= '/^warp=/{print $2; exit}')"
-    loc="$(echo "$trace" | awk -F= '/^loc=/{print $2; exit}')"
-    colo="$(echo "$trace" | awk -F= '/^colo=/{print $2; exit}')"
-    http="$(echo "$trace" | awk -F= '/^http=/{print $2; exit}')"
+    ip="$(echo "$trace" | awk -F= '/^ip=/{print $2; exit}' | tr -d '\r')"
+    warp="$(echo "$trace" | awk -F= '/^warp=/{print $2; exit}' | tr -d '\r')"
+    loc="$(echo "$trace" | awk -F= '/^loc=/{print $2; exit}' | tr -d '\r')"
+    colo="$(echo "$trace" | awk -F= '/^colo=/{print $2; exit}' | tr -d '\r')"
+    http="$(echo "$trace" | awk -F= '/^http=/{print $2; exit}' | tr -d '\r')"
     echo "ip=${ip}|warp=${warp:-?}|loc=${loc:-?}|colo=${colo:-?}|http=${http:-?}"
     return 0
 }

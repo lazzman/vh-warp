@@ -17,6 +17,9 @@ services:
     sysctls:
       - net.ipv4.conf.all.src_valid_mark=1
       - net.ipv4.ip_forward=1
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv6.conf.default.disable_ipv6=0
+      - net.ipv6.conf.all.forwarding=1
     environment:
       INSTANCE_COUNT: ${INSTANCE_COUNT:-1}
       BASE_PORT: ${BASE_PORT:-1111}
@@ -36,6 +39,7 @@ services:
       GOST_WRITE_BUFFER: ${GOST_WRITE_BUFFER:-32768}
       GOST_BACKLOG: ${GOST_BACKLOG:-1024}
       LB_IDLE_TIMEOUT: ${LB_IDLE_TIMEOUT:-120}
+      PREFER_IPV6: ${PREFER_IPV6:-0}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       # 多实例数据自动隔离到 volume 内 instances/<id>/；单实例兼容根目录
