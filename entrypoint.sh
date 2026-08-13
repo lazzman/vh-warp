@@ -22,6 +22,10 @@ else
     log "   UPSTREAM_SOCKS5=(未配置，WARP 直连出网)"
 fi
 
+if prefer_ipv6_enabled; then
+    log "🌐 PREFER_IPV6=1，GOST 双栈出站优先 AAAA（纯 IPv4 仍通，不重启）"
+fi
+
 ln -sf /usr/local/bin/vhwarp.sh /usr/bin/vhwarp 2>/dev/null
 ln -sf /usr/local/bin/gost-setup.sh /usr/bin/gost-setup 2>/dev/null
 ln -sf /usr/local/bin/log-monitor.sh /usr/bin/log-monitor 2>/dev/null

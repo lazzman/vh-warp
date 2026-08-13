@@ -21,6 +21,7 @@
 - 🚅 **GOST Optimized** — UDP proxy, Nagle disabled, 32KB read/write buffers, 120s idle timeout, TCP keepalive (memory-friendly multi-instance defaults)
 - 🧩 **Multi-Instance** — `INSTANCE_COUNT` spawns N isolated WARP+GOST stacks (netns), ports auto-increment
 - ⚖️ **Load Balancer** — Unified port `1110` with round / random / hash / sticky strategies; sticky via `socks5h://{id}@host:1110`
+- 🌐 **IPv6 Priority** — `PREFER_IPV6=1` makes GOST resolve dual-stack hosts via AAAA first; IPv4-only sites still work
 
 ## 🚀 Quick Start
 
@@ -268,6 +269,7 @@ docker run -d \
 | `LB_IDLE_TIMEOUT` | `120` | LB relay idle timeout (seconds) |
 | `WARP_SVC_RSS_MAX_KB` | `196608` | Restart instance warp-svc when RSS exceeds this (KB) |
 | `GOST_RSS_MAX_KB` | `196608` | Restart instance gost when RSS exceeds this (KB) |
+| `PREFER_IPV6` | `0` | `1` prefers IPv6 (AAAA) for dual-stack destinations; IPv4-only still works |
 
 ### Memory sizing
 
@@ -339,6 +341,7 @@ docker exec -it vh-warp vhwarp
 - 🚅 **GOST 优化** — UDP 代理、Nagle 禁用、读写缓冲 32KB、空闲 120s 回收、TCP keepalive（多实例内存友好默认）
 - 🧩 **多实例** — `INSTANCE_COUNT` 启动 N 套隔离的 WARP+GOST（netns），端口自动递增
 - ⚖️ **负载均衡** — 统一入口 `1110`，支持轮询/随机/哈希/粘性；`socks5h://{id}@host:1110` 固定后端
+- 🌐 **IPv6 优先** — `PREFER_IPV6=1` 时 GOST 解析双栈域名优先 AAAA；纯 IPv4 站点仍可访问
 
 ## 🚀 快速开始
 
@@ -592,6 +595,7 @@ docker run -d \
 | `LB_IDLE_TIMEOUT` | `120` | LB 转发空闲超时（秒） |
 | `WARP_SVC_RSS_MAX_KB` | `196608` | 实例 warp-svc RSS 超过该值（KB）则重启回收 |
 | `GOST_RSS_MAX_KB` | `196608` | 实例 gost RSS 超过该值（KB）则重启回收 |
+| `PREFER_IPV6` | `0` | `1` 双栈出站优先 IPv6（AAAA）；纯 IPv4 仍通，不检测不重启 |
 
 ### 内存估算
 

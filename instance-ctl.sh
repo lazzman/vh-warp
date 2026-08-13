@@ -7,11 +7,11 @@ source /usr/local/bin/warp-common.sh
 
 log() {
     local id="${CURRENT_INSTANCE_ID:-?}"
-    local dir
+    local dir msg
     dir="$(instance_log_dir "${CURRENT_INSTANCE_ID:-0}")"
     mkdir -p "$dir"
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] [instance-${id}] $1" | tee -a "$dir/instance.log" >> "${WARP_LOG_ROOT}/entrypoint.log" 2>/dev/null || \
-        echo "[$(date +'%Y-%m-%d %H:%M:%S')] [instance-${id}] $1"
+    msg="[$(date +'%Y-%m-%d %H:%M:%S')] [instance-${id}] $1"
+    echo "$msg" | tee -a "$dir/instance.log"
 }
 
 # ── 网络命名空间 ───────────────────────────────────────────────────────
@@ -81,6 +81,7 @@ LOG_DIR="${log_dir}"
 NS_IP="${ns_ip}"
 GOST_PORT="${INSTANCE_GOST_PORT}"
 GOST_OPTS="$(gost_listen_query)"
+PREFER_IPV6="${PREFER_IPV6:-0}"
 
 mkdir -p "\$LOG_DIR" "\$RUN_DIR" "\$DATA_DIR"
 
@@ -153,7 +154,11 @@ if warp-cli --accept-tos registration show 2>/dev/null | grep -q "Device ID"; th
 fi
 
 # 启动实例内 GOST（监听 netns 内全接口）
-gost -L "mixed://0.0.0.0:\${GOST_PORT}?\${GOST_OPTS}" >>"\$LOG_DIR/gost.log" 2>&1 &
+if [ -f /host-instance-run/gost.yaml ]; then
+    gost -C /host-instance-run/gost.yaml >>"\$LOG_DIR/gost.log" 2>&1 &
+else
+    gost -L "mixed://0.0.0.0:\${GOST_PORT}?\${GOST_OPTS}" >>"\$LOG_DIR/gost.log" 2>&1 &
+fi
 echo \$! > /host-instance-run/gost.pid
 
 # 保活
@@ -168,7 +173,11 @@ while true; do
     if [ -f /host-instance-run/gost.pid ]; then
         gpid=\$(cat /host-instance-run/gost.pid)
         if ! kill -0 "\$gpid" 2>/dev/null; then
-            gost -L "mixed://0.0.0.0:\${GOST_PORT}?\${GOST_OPTS}" >>"\$LOG_DIR/gost.log" 2>&1 &
+            if [ -f /host-instance-run/gost.yaml ]; then
+                gost -C /host-instance-run/gost.yaml >>"\$LOG_DIR/gost.log" 2>&1 &
+            else
+                gost -L "mixed://0.0.0.0:\${GOST_PORT}?\${GOST_OPTS}" >>"\$LOG_DIR/gost.log" 2>&1 &
+            fi
             echo \$! > /host-instance-run/gost.pid
         fi
     fi
@@ -192,6 +201,13 @@ start_instance_multi() {
 
     mkdir -p "$run_dir" "$log_dir" "$(instance_data_dir "$id")"
     setup_netns "$id"
+
+    if prefer_ipv6_enabled; then
+        write_gost_listen_config "${INSTANCE_GOST_PORT}" "${run_dir}/gost.yaml"
+        log "GOST 出站 resolver prefer=ipv6（双栈优先 AAAA）"
+    else
+        rm -f "${run_dir}/gost.yaml"
+    fi
 
     instance_supervisor_script "$id" > "$script_path"
     chmod +x "$script_path"
