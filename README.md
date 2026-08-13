@@ -20,6 +20,7 @@
 - 🚅 **GOST Optimized** — UDP proxy, Nagle disabled, 32KB read/write buffers, 120s idle timeout, TCP keepalive (memory-friendly multi-instance defaults)
 - 🧩 **Multi-Instance** — `INSTANCE_COUNT` spawns N isolated WARP+GOST stacks (netns), ports auto-increment
 - ⚖️ **Load Balancer** — Unified port `1110` with round / random / hash / sticky strategies; sticky via `socks5h://{id}@host:1110`
+- 🔄 **Rolling Restart** — When `INSTANCE_COUNT>=4`, hard-restarts instances one by one every 6h; waits for `warp=on` before the next; overlapping rounds are skipped
 - 🌐 **IPv6 Priority** — `PREFER_IPV6=1` makes GOST resolve dual-stack hosts via AAAA first; IPv4-only sites still work
 
 ## 🚀 Quick Start
@@ -180,6 +181,26 @@ If WARP remains unavailable for 10 minutes while direct Internet is healthy, the
 
 Cloudflare One Client 2026.6 and later requires outbound HTTPS access to `api.devices.cloudflare.com` for registration and settings. MASQUE also requires working UDP/HTTP3 connectivity.
 
+## 🔄 Scheduled Rolling Restart
+
+When `INSTANCE_COUNT >= 4` (or `ROTATE_RESTART_ENABLED=1`), a daemon hard-restarts instances **one at a time** on a fixed interval (default `6h`):
+
+1. Mark the backend `down` so the load balancer drains it
+2. Full `instance-ctl restart` (netns + warp-svc + gost), **keeping the current WARP registration**
+3. Probe the instance direct port until `warp=on` / `warp=plus` (default 90s)
+4. Only then restart the next instance
+5. A failed instance is retried twice, then skipped; the round continues
+6. If the previous round is still running when the next tick fires, that tick is **dropped** (not queued)
+
+The first round waits one full interval after container start. Health checks skip the instance currently being rotated.
+
+```bash
+docker exec -it vh-warp rotate-restart status
+docker exec -it vh-warp tail -f /var/log/warp-gost/rotate-restart.log
+# Manual one-shot (respects the single-flight lock)
+docker exec -it vh-warp rotate-restart once
+```
+
 ## 🔔 PushDeer Notifications
 
 Enter the config menu **6) PushDeer Notification** to set your PushKey:
@@ -199,6 +220,7 @@ Logs are stored in `/var/log/warp-gost/`, capped at 3MB per file with auto-rotat
 | `warp-svc.log` | Cloudflare WARP service log |
 | `gost.log` | GOST proxy service log |
 | `health-check.log` | 💓 Health check log |
+| `rotate-restart.log` | 🔄 Scheduled rolling restart log |
 | `vhwarp.log` | ⚙️ Config tool operation log |
 | `entrypoint.log` | 🚀 Container startup log |
 ```bash
@@ -256,6 +278,10 @@ docker run -d \
 | `HEALTH_CHECK_INTERVAL` | `60` | Health check interval (seconds) |
 | `HEALTH_SOFT_FAILURES` | `3` | Failures before soft reconnect |
 | `HEALTH_FALLBACK_AFTER` | `600` | Seconds before Free fallback |
+| `ROTATE_RESTART_ENABLED` | `auto` | `auto` enables when count≥4; `1`/`0` forces |
+| `ROTATE_RESTART_INTERVAL` | `6h` | Whole-round interval (`30m` / `6h` / `12h` / seconds) |
+| `ROTATE_RESTART_PROBE_TIMEOUT` | `90` | Seconds to wait for `warp=on` after each restart |
+| `ROTATE_RESTART_RETRIES` | `2` | Extra hard-restart attempts per instance before skip |
 | `UPSTREAM_SOCKS5` | _(empty)_ | Optional upstream SOCKS5 for WARP dial (`socks5://user:pass@host:port`) |
 | `UPSTREAM_SOCKS5_UDP` | `udp` | `udp` or `tcp`; MASQUE needs real UDP |
 | `UPSTREAM_MTU` | `1280` | TUN MTU for hev-socks5-tunnel |
@@ -335,6 +361,7 @@ docker exec -it vh-warp vhwarp
 - 🚅 **GOST 优化** — UDP 代理、Nagle 禁用、读写缓冲 32KB、空闲 120s 回收、TCP keepalive（多实例内存友好默认）
 - 🧩 **多实例** — `INSTANCE_COUNT` 启动 N 套隔离的 WARP+GOST（netns），端口自动递增
 - ⚖️ **负载均衡** — 统一入口 `1110`，支持轮询/随机/哈希/粘性；`socks5h://{id}@host:1110` 固定后端
+- 🔄 **定时滚动重启** — `INSTANCE_COUNT>=4` 时每 6 小时逐台硬重启；探针 `warp=on` 后才动下一台；叠轮直接忽略
 - 🌐 **IPv6 优先** — `PREFER_IPV6=1` 时 GOST 解析双栈域名优先 AAAA；纯 IPv4 站点仍可访问
 
 ## 🚀 快速开始
@@ -500,6 +527,26 @@ trace 输出关键字段：
 
 Cloudflare One Client 2026.6 及更高版本注册和同步设置需要放行 `api.devices.cloudflare.com` 的出站 HTTPS；MASQUE 还要求 UDP/HTTP3 网络可用。
 
+## 🔄 定时滚动重启
+
+当 `INSTANCE_COUNT >= 4`（或 `ROTATE_RESTART_ENABLED=1`）时，守护进程按固定间隔（默认 `6h`）**逐台**硬重启：
+
+1. 将该后端标 `down`，负载均衡先摘流
+2. 完整 `instance-ctl restart`（netns + warp-svc + gost），**保留当前 WARP 注册**
+3. 对实例直连端口探针，直到 `warp=on` / `warp=plus`（默认 90s）
+4. 成功后才重启下一台
+5. 失败则再试 2 次，仍失败就跳过并继续
+6. 上一轮还没跑完就到点，**整轮丢弃**（不排队）
+
+容器启动后，定时滚动重启日志会**同时打到 Docker 控制台**和 `/var/log/warp-gost/rotate-restart.log` 文件（支持滚动截断）。
+
+```bash
+docker exec -it vh-warp rotate-restart status
+docker exec -it vh-warp tail -f /var/log/warp-gost/rotate-restart.log
+# 手动跑一轮（受单飞锁约束，与定时轮重叠则忽略）
+docker exec -it vh-warp rotate-restart once
+```
+
 ## 🔔 PushDeer 通知
 
 进入配置菜单 **6) PushDeer 断线通知** 设置 PushKey：
@@ -519,6 +566,7 @@ Cloudflare One Client 2026.6 及更高版本注册和同步设置需要放行 `a
 | `warp-svc.log` | Cloudflare WARP 服务日志 |
 | `gost.log` | GOST 代理服务日志 |
 | `health-check.log` | 💓 心跳检测日志 |
+| `rotate-restart.log` | 🔄 定时滚动重启日志（同时输出到控制台）
 | `vhwarp.log` | ⚙️ 配置工具操作日志 |
 | `entrypoint.log` | 🚀 容器启动日志 |
 
@@ -577,6 +625,10 @@ docker run -d \
 | `HEALTH_CHECK_INTERVAL` | `60` | 健康检测间隔（秒） |
 | `HEALTH_SOFT_FAILURES` | `3` | 触发软重连的连续失败次数 |
 | `HEALTH_FALLBACK_AFTER` | `600` | 回退 Free 的持续失败时间（秒） |
+| `ROTATE_RESTART_ENABLED` | `auto` | `auto` 在实例数≥4 时启用；`1`/`0` 强制 |
+| `ROTATE_RESTART_INTERVAL` | `6h` | 整轮间隔（`30m` / `6h` / `12h` / 纯秒） |
+| `ROTATE_RESTART_PROBE_TIMEOUT` | `90` | 单台重启后等待 `warp=on` 的秒数 |
+| `ROTATE_RESTART_RETRIES` | `2` | 本台失败后的额外硬重启次数 |
 | `UPSTREAM_SOCKS5` | 空 | 可选，WARP 建连走的上游 SOCKS5 |
 | `UPSTREAM_SOCKS5_UDP` | `udp` | `udp` / `tcp`；MASQUE 需要真 UDP |
 | `UPSTREAM_MTU` | `1280` | 上游 TUN MTU |

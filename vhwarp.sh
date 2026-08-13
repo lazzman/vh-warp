@@ -14,7 +14,7 @@ while [ $# -gt 0 ]; do
             ;;
         -h|--help)
             echo "用法: vhwarp [-i 实例ID]"
-            echo "  环境变量: INSTANCE_COUNT BASE_PORT LB_PORT LB_STRATEGY"
+            echo "  环境变量: INSTANCE_COUNT BASE_PORT LB_PORT LB_STRATEGY ROTATE_RESTART_*"
             exit 0
             ;;
         *)

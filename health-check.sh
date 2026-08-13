@@ -489,6 +489,11 @@ tick_free_pending() {
 check_one_instance() {
     local id="$1" count elapsed fallback_rc state
 
+    if instance_rotate_in_progress "$id"; then
+        log "⏸️ [实例${id}] 定时滚动重启进行中，本轮健康检查跳过"
+        return 0
+    fi
+
     state=$(cat "$(state_file "$id")" 2>/dev/null || echo "MONITORING")
 
     # FREE_PENDING：独立非阻塞路径，不进入长 sleep
