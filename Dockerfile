@@ -49,6 +49,7 @@ RUN ldconfig && \
 
 COPY entrypoint.sh vhwarp.sh gost-setup.sh log-monitor.sh health-check.sh \
      warp-common.sh instance-ctl.sh lb-setup.sh lb-proxy.py upstream-setup.sh \
+     rotate-restart.sh \
      /usr/local/bin/
 
 RUN chmod +x /usr/local/bin/entrypoint.sh \
@@ -60,7 +61,8 @@ RUN chmod +x /usr/local/bin/entrypoint.sh \
     /usr/local/bin/instance-ctl.sh \
     /usr/local/bin/lb-setup.sh \
     /usr/local/bin/lb-proxy.py \
-    /usr/local/bin/upstream-setup.sh && \
+    /usr/local/bin/upstream-setup.sh \
+    /usr/local/bin/rotate-restart.sh && \
     which warp-cli && which warp-svc && which warp-diag && which gost && which python3 && \
     which hev-socks5-tunnel && \
     echo "=== 构建验证通过 ===" && \

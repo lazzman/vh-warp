@@ -33,6 +33,7 @@ ln -sf /usr/local/bin/health-check.sh /usr/bin/health-check 2>/dev/null
 ln -sf /usr/local/bin/instance-ctl.sh /usr/bin/instance-ctl 2>/dev/null
 ln -sf /usr/local/bin/lb-setup.sh /usr/bin/lb-setup 2>/dev/null
 ln -sf /usr/local/bin/upstream-setup.sh /usr/bin/upstream-setup 2>/dev/null
+ln -sf /usr/local/bin/rotate-restart.sh /usr/bin/rotate-restart 2>/dev/null
 
 ensure_runtime_dirs
 
@@ -66,6 +67,13 @@ log "📋 正在启动日志监控..."
 
 log "🩺 正在启动健康检测..."
 /usr/local/bin/health-check.sh > /dev/null 2>&1 &
+
+if rotate_restart_enabled; then
+    log "🔄 正在启动定时滚动重启: interval=${ROTATE_RESTART_INTERVAL} retries=${ROTATE_RESTART_RETRIES} probe=${ROTATE_RESTART_PROBE_TIMEOUT}s"
+else
+    log "ℹ️ 定时滚动重启待命（未启用：ENABLED=${ROTATE_RESTART_ENABLED} count=${INSTANCE_COUNT}）"
+fi
+/usr/local/bin/rotate-restart.sh daemon > >(tee -a "$LOG_FILE") 2>&1 &
 
 # 等代理就绪后打印各实例 WARP 出口
 log "🔎 探测各实例 WARP 出口 IP..."
@@ -104,6 +112,10 @@ echo "     docker exec -it <容器> vhwarp"
 if [ "$INSTANCE_COUNT" -gt 1 ]; then
     echo "     docker exec -it <容器> vhwarp -i <实例ID>"
 fi
+if rotate_restart_enabled; then
+    echo "  🔄 定时滚动重启: 每 ${ROTATE_RESTART_INTERVAL} 串行硬重启（探针成功后下一台）"
+    echo "     docker exec -it <容器> rotate-restart status"
+fi
 echo "========================================"
 echo ""
 
@@ -112,6 +124,9 @@ echo ""
 
 log "✅ 日志监控已启动"
 log "✅ 健康检测已启动"
+if rotate_restart_enabled; then
+    log "✅ 定时滚动重启已启动"
+fi
 
 # 保持前台：优先跟随单实例 warp-svc；多实例跟随 instance outer 进程
 cleanup() {
@@ -135,6 +150,9 @@ if [ "$INSTANCE_COUNT" -eq 1 ]; then
             sleep 5
             # warp-svc 被杀时尝试拉起
             if ! kill -0 "$WARP_PID" 2>/dev/null; then
+                if instance_rotate_in_progress 0; then
+                    continue
+                fi
                 log "⚠️ warp-svc 退出，尝试重启单实例..."
                 /usr/local/bin/instance-ctl.sh start 0 >> "$LOG_FILE" 2>&1 || true
                 [ -f "$WARP_PID_FILE" ] && WARP_PID=$(cat "$WARP_PID_FILE")
@@ -148,6 +166,9 @@ else
     while true; do
         for id in $(instance_id_list); do
             opid_file="$(instance_run_dir "$id")/outer.pid"
+            if instance_rotate_in_progress "$id"; then
+                continue
+            fi
             if [ -f "$opid_file" ]; then
                 if ! kill -0 "$(cat "$opid_file")" 2>/dev/null; then
                     log "⚠️ 实例 ${id} supervisor 退出，正在重启..."

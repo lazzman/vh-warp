@@ -7,6 +7,13 @@ LB_PORT="${LB_PORT:-1110}"
 LB_STRATEGY="${LB_STRATEGY:-round}"   # round | random | hash | sticky
 LB_ENABLED="${LB_ENABLED:-auto}"      # auto | 1 | 0  (auto: count>1 时开启)
 
+# 定时滚动硬重启：auto 时 INSTANCE_COUNT>=4 启用；1/0 强制
+ROTATE_RESTART_ENABLED="${ROTATE_RESTART_ENABLED:-auto}"
+ROTATE_RESTART_INTERVAL="${ROTATE_RESTART_INTERVAL:-6h}"
+ROTATE_RESTART_PROBE_TIMEOUT="${ROTATE_RESTART_PROBE_TIMEOUT:-90}"
+ROTATE_RESTART_RETRIES="${ROTATE_RESTART_RETRIES:-2}"
+ROTATE_RESTART_MIN_COUNT="${ROTATE_RESTART_MIN_COUNT:-4}"
+
 WARP_DATA_ROOT="${WARP_DATA_ROOT:-/var/lib/cloudflare-warp}"
 WARP_LOG_ROOT="${WARP_LOG_ROOT:-/var/log/warp-gost}"
 # 运行时状态放在数据卷下，避免多实例 unshare 后 remount /run 导致 pid 文件丢失
@@ -155,6 +162,69 @@ lb_should_enable() {
         0|false|FALSE|no|NO|off|OFF) return 1 ;;
         *) [ "$INSTANCE_COUNT" -gt 1 ] ;;
     esac
+}
+
+# 解析 30s / 15m / 6h / 1d / 纯秒 → 秒；失败返回 1
+parse_duration_seconds() {
+    local raw="${1:-}" n unit
+    raw="${raw// /}"
+    [ -n "$raw" ] || return 1
+    if [[ "$raw" =~ ^[0-9]+$ ]]; then
+        echo "$raw"
+        return 0
+    fi
+    if [[ "$raw" =~ ^([0-9]+)([smhdSMHD])$ ]]; then
+        n="${BASH_REMATCH[1]}"
+        unit="${BASH_REMATCH[2]}"
+        unit="$(echo "$unit" | tr '[:upper:]' '[:lower:]')"
+        case "$unit" in
+            s) echo "$n" ;;
+            m) echo $((n * 60)) ;;
+            h) echo $((n * 3600)) ;;
+            d) echo $((n * 86400)) ;;
+            *) return 1 ;;
+        esac
+        return 0
+    fi
+    return 1
+}
+
+rotate_restart_enabled() {
+    local min_count="${ROTATE_RESTART_MIN_COUNT:-4}"
+    if ! [[ "$min_count" =~ ^[0-9]+$ ]] || [ "$min_count" -lt 1 ]; then
+        min_count=4
+    fi
+    case "${ROTATE_RESTART_ENABLED:-auto}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        0|false|FALSE|no|NO|off|OFF) return 1 ;;
+        *) [ "$INSTANCE_COUNT" -ge "$min_count" ] ;;
+    esac
+}
+
+rotate_mark_file() {
+    echo "$(instance_run_dir "${1:-0}")/rotate-restarting"
+}
+
+mark_instance_rotating() {
+    local id="${1:-0}" pid="${2:-$$}"
+    mkdir -p "$(instance_run_dir "$id")"
+    echo "$pid" > "$(rotate_mark_file "$id")"
+}
+
+unmark_instance_rotating() {
+    rm -f "$(rotate_mark_file "${1:-0}")"
+}
+
+instance_rotate_in_progress() {
+    local id="${1:-0}" f pid
+    f="$(rotate_mark_file "$id")"
+    [ -f "$f" ] || return 1
+    pid="$(cat "$f" 2>/dev/null || true)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$f"
+    return 1
 }
 
 env_flag_on() {
