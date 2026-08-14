@@ -41,6 +41,37 @@ assert_not_contains() {
     fi
 }
 
+assert_equals() {
+    local name="$1" actual="$2" expected="$3"
+    if [ "$actual" = "$expected" ]; then
+        pass "$name"
+    else
+        fail "${name}（期望：${expected}；实际：${actual}）"
+    fi
+}
+
+# IPv4/IPv6 优先应写入 GOST resolver；两个开关同时开启时固定选择 IPv4。
+PREFER_IPV4=1
+PREFER_IPV6=0
+gost_config="$(mktemp)"
+write_gost_listen_config 1080 "$gost_config"
+gost_config_text="$(cat "$gost_config")"
+assert_equals "IPv4 优先应返回 ipv4" "$(gost_resolver_preference)" "ipv4"
+assert_contains "IPv4 优先配置应使用 A 记录" "$gost_config_text" "prefer: ipv4"
+
+PREFER_IPV6=1
+assert_equals "双开关时 IPv4 应优先" "$(gost_resolver_preference)" "ipv4"
+
+PREFER_IPV4=0
+write_gost_listen_config 1080 "$gost_config"
+gost_config_text="$(cat "$gost_config")"
+assert_equals "IPv6 优先应保持兼容" "$(gost_resolver_preference)" "ipv6"
+assert_contains "IPv6 优先配置应使用 AAAA 记录" "$gost_config_text" "prefer: ipv6"
+
+PREFER_IPV6=0
+assert_equals "未开启优先时不应选择 IP 版本" "$(gost_resolver_preference)" ""
+rm -f "$gost_config"
+
 # 横幅测试不依赖真实 WARP/GOST 进程。
 pgrep() {
     return 0

@@ -51,8 +51,8 @@ start_gost() {
 
     log "🚀 启动 GOST 代理 (mixed SOCKS5+HTTP 监听 0.0.0.0:${PORT})..."
     gost_start_listen "$PORT" "$(instance_run_dir "$INSTANCE_ID")/gost.yaml" "$LOG_FILE" > "$PID_FILE"
-    if prefer_ipv6_enabled; then
-        log "GOST 出站 resolver prefer=ipv6（双栈优先 AAAA）"
+    if gost_ip_preference_enabled; then
+        log "GOST 出站 resolver prefer=$(gost_resolver_preference)"
     fi
 
     local i=0
