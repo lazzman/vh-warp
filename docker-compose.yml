@@ -46,6 +46,7 @@ services:
       GOST_WRITE_BUFFER: ${GOST_WRITE_BUFFER:-32768}
       GOST_BACKLOG: ${GOST_BACKLOG:-1024}
       LB_IDLE_TIMEOUT: ${LB_IDLE_TIMEOUT:-120}
+      PREFER_IPV4: ${PREFER_IPV4:-0}
       PREFER_IPV6: ${PREFER_IPV6:-0}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:

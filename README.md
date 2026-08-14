@@ -21,7 +21,7 @@
 - 🧩 **Multi-Instance** — `INSTANCE_COUNT` spawns N isolated WARP+GOST stacks (netns), ports auto-increment
 - ⚖️ **Load Balancer** — Unified port `1110` with round / random / hash / rotate strategies; route by id via `socks5h://{id}@host:1110`
 - 🔄 **Rolling Restart** — When `INSTANCE_COUNT>=4`, hard-restarts instances one by one every 6h; waits for `warp=on` before the next; overlapping rounds are skipped
-- 🌐 **IPv6 Priority** — `PREFER_IPV6=1` makes GOST resolve dual-stack hosts via AAAA first; IPv4-only sites still work
+- 🌐 **IP Version Preference** — `PREFER_IPV4=1` or `PREFER_IPV6=1` makes GOST select A or AAAA for dual-stack hosts
 
 ## 🚀 Quick Start
 
@@ -294,7 +294,10 @@ docker run -d \
 | `GOST_WRITE_BUFFER` | `32768` | GOST per-conn write buffer (bytes) |
 | `GOST_BACKLOG` | `1024` | GOST listen backlog |
 | `LB_IDLE_TIMEOUT` | `120` | LB relay idle timeout (seconds) |
-| `PREFER_IPV6` | `0` | `1` prefers IPv6 (AAAA) for dual-stack destinations; IPv4-only still works |
+| `PREFER_IPV4` | `0` | `1` selects IPv4 (A) for dual-stack destinations |
+| `PREFER_IPV6` | `0` | `1` selects IPv6 (AAAA) for dual-stack destinations |
+
+Set at most one of `PREFER_IPV4` and `PREFER_IPV6`. If both are `1`, IPv4 takes precedence. For a dual-stack destination, a failed TCP connection does not automatically retry the other address family.
 
 ### Memory sizing
 
@@ -366,7 +369,7 @@ docker exec -it vh-warp vhwarp
 - 🧩 **多实例** — `INSTANCE_COUNT` 启动 N 套隔离的 WARP+GOST（netns），端口自动递增
 - ⚖️ **负载均衡** — 统一入口 `1110`，支持逐请求轮询/随机/哈希/粘性/定时统一轮换；`socks5h://{id}@host:1110` 固定后端
 - 🔄 **定时滚动重启** — `INSTANCE_COUNT>=4` 时每 6 小时逐台硬重启；探针 `warp=on` 后才动下一台；叠轮直接忽略
-- 🌐 **IPv6 优先** — `PREFER_IPV6=1` 时 GOST 解析双栈域名优先 AAAA；纯 IPv4 站点仍可访问
+- 🌐 **IP 版本优先** — `PREFER_IPV4=1` 或 `PREFER_IPV6=1` 时，GOST 对双栈域名选用 A 或 AAAA
 
 ## 🚀 快速开始
 
@@ -706,7 +709,10 @@ docker run -d \
 | `GOST_WRITE_BUFFER` | `32768` | GOST 单连接写缓冲（字节） |
 | `GOST_BACKLOG` | `1024` | GOST listen backlog |
 | `LB_IDLE_TIMEOUT` | `120` | LB 转发空闲超时（秒） |
-| `PREFER_IPV6` | `0` | `1` 双栈出站优先 IPv6（AAAA）；纯 IPv4 仍通，不检测不重启 |
+| `PREFER_IPV4` | `0` | `1` 双栈出站选用 IPv4（A） |
+| `PREFER_IPV6` | `0` | `1` 双栈出站选用 IPv6（AAAA） |
+
+`PREFER_IPV4` 与 `PREFER_IPV6` 最多开启一项；若同时设为 `1`，IPv4 优先。对于双栈目标，首选地址 TCP 建连失败时不会自动重试另一地址族。
 
 ### 内存估算
 

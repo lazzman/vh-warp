@@ -81,7 +81,6 @@ LOG_DIR="${log_dir}"
 NS_IP="${ns_ip}"
 GOST_PORT="${INSTANCE_GOST_PORT}"
 GOST_OPTS="$(gost_listen_query)"
-PREFER_IPV6="${PREFER_IPV6:-0}"
 
 mkdir -p "\$LOG_DIR" "\$RUN_DIR" "\$DATA_DIR"
 
@@ -202,9 +201,9 @@ start_instance_multi() {
     mkdir -p "$run_dir" "$log_dir" "$(instance_data_dir "$id")"
     setup_netns "$id"
 
-    if prefer_ipv6_enabled; then
+    if gost_ip_preference_enabled; then
         write_gost_listen_config "${INSTANCE_GOST_PORT}" "${run_dir}/gost.yaml"
-        log "GOST 出站 resolver prefer=ipv6（双栈优先 AAAA）"
+        log "GOST 出站 resolver prefer=$(gost_resolver_preference)"
     else
         rm -f "${run_dir}/gost.yaml"
     fi

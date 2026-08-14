@@ -39,16 +39,21 @@ gost_listen_query() {
     echo "udp=true&nodelay=true&backlog=${GOST_BACKLOG}&readTimeout=0&idleTimeout=${GOST_IDLE_TIMEOUT}&tcpKeepAlive=true&keepAlivePeriod=${GOST_KEEPALIVE_PERIOD}&readBufferSize=${GOST_READ_BUFFER}&writeBufferSize=${GOST_WRITE_BUFFER}"
 }
 
-# PREFER_IPV6：GOST 3 YAML 的 handler 必须是 auto（mixed 会直接 fatal 退出）
+# IP 版本优先：GOST 3 YAML 的 handler 必须是 auto（mixed 会直接 fatal 退出）。
 # nameserver 必须带 udp://，否则解析器不可用。
 write_gost_listen_config() {
-    local port="$1" out="$2"
+    local port="$1" out="$2" preference
+    preference="$(gost_resolver_preference)"
+    if [ -z "$preference" ]; then
+        echo "未配置 IP 版本优先，拒绝生成 GOST resolver 配置" >&2
+        return 1
+    fi
     mkdir -p "$(dirname "$out")"
     cat > "$out" <<EOF
 services:
 - name: mixed-tcp
   addr: ":${port}"
-  resolver: resolver-v6
+  resolver: resolver-preferred
   handler:
     type: auto
     metadata:
@@ -68,7 +73,7 @@ services:
       keepalive: true
 - name: mixed-udp
   addr: ":${port}"
-  resolver: resolver-v6
+  resolver: resolver-preferred
   handler:
     type: auto
     metadata:
@@ -76,14 +81,14 @@ services:
   listener:
     type: udp
 resolvers:
-- name: resolver-v6
+- name: resolver-preferred
   nameservers:
   - addr: udp://1.1.1.1:53
-    prefer: ipv6
+    prefer: ${preference}
     timeout: 3s
     ttl: 30s
   - addr: udp://1.0.0.1:53
-    prefer: ipv6
+    prefer: ${preference}
     timeout: 3s
     ttl: 30s
 EOF
@@ -92,7 +97,7 @@ EOF
 # 启动真正出站的 GOST（解析目标地址的那一层）。stdout=pid
 gost_start_listen() {
     local port="$1" cfg="$2" logf="$3"
-    if prefer_ipv6_enabled; then
+    if gost_ip_preference_enabled; then
         write_gost_listen_config "$port" "$cfg"
         gost -C "$cfg" >>"$logf" 2>&1 &
     else
@@ -111,7 +116,9 @@ WARP_CLI_TIMEOUT="${WARP_CLI_TIMEOUT:-60}"
 WARP_REGISTRATION_TIMEOUT="${WARP_REGISTRATION_TIMEOUT:-60}"
 WARP_CONNECT_TIMEOUT="${WARP_CONNECT_TIMEOUT:-180}"
 
-# 双栈出站优先 IPv6（AAAA）；不检测、不因 IPv4 出口重启
+# 双栈出站 IP 版本优先；不检测、不因出口 IP 版本变化重启。
+# 两者同时开启时 PREFER_IPV4 优先，避免被宿主 resolver 的地址排序影响。
+PREFER_IPV4="${PREFER_IPV4:-0}"                   # 0 | 1
 PREFER_IPV6="${PREFER_IPV6:-0}"                   # 0 | 1
 
 # 上游 SOCKS5 TUN（可选）：WARP 建连/注册走节点；空=直连（默认）
@@ -238,6 +245,23 @@ env_flag_on() {
 
 prefer_ipv6_enabled() {
     env_flag_on "${PREFER_IPV6:-0}"
+}
+
+prefer_ipv4_enabled() {
+    env_flag_on "${PREFER_IPV4:-0}"
+}
+
+# 返回 GOST resolver 所用的 prefer 值；同时开启时 IPv4 优先。
+gost_resolver_preference() {
+    if prefer_ipv4_enabled; then
+        echo "ipv4"
+    elif prefer_ipv6_enabled; then
+        echo "ipv6"
+    fi
+}
+
+gost_ip_preference_enabled() {
+    [ -n "$(gost_resolver_preference)" ]
 }
 
 instance_id_list() {

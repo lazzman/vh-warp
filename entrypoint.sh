@@ -22,8 +22,11 @@ else
     log "   UPSTREAM_SOCKS5=(未配置，WARP 直连出网)"
 fi
 
-if prefer_ipv6_enabled; then
-    log "🌐 PREFER_IPV6=1，GOST 双栈出站优先 AAAA（纯 IPv4 仍通，不重启）"
+if prefer_ipv4_enabled && prefer_ipv6_enabled; then
+    log "⚠️ PREFER_IPV4=1 与 PREFER_IPV6=1 同时设置，按 IPv4 优先"
+fi
+if gost_ip_preference_enabled; then
+    log "🌐 GOST 双栈出站选用 $(gost_resolver_preference)（TCP 失败不会自动切换地址族）"
 fi
 
 ln -sf /usr/local/bin/vhwarp.sh /usr/bin/vhwarp 2>/dev/null
