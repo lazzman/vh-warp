@@ -11,6 +11,7 @@ LOCK_DIR="${WARP_RUN_ROOT}/rotate-restart.lock"
 STATE_FILE="${WARP_RUN_ROOT}/rotate-restart.state"
 TICK_SECONDS=30
 MIN_INTERVAL_SECONDS=60
+DRAIN_EMPTY_GRACE_SECONDS=2
 
 mkdir -p "${WARP_LOG_ROOT}" "$WARP_RUN_ROOT"
 
@@ -60,6 +61,75 @@ rotate_retries() {
         return
     fi
     echo "$n"
+}
+
+rotate_drain_timeout() {
+    local sec
+    if ! sec="$(parse_duration_seconds "${ROTATE_RESTART_DRAIN_TIMEOUT:-120}")"; then
+        log "⚠️ 无效 ROTATE_RESTART_DRAIN_TIMEOUT=${ROTATE_RESTART_DRAIN_TIMEOUT}，回退 120s"
+        echo 120
+        return
+    fi
+    echo "$sec"
+}
+
+instance_active_lb_connections() {
+    local id="$1" backend state count
+    backend="$(instance_backend_addr "$id")"
+    state="$(lb_connection_state_file)"
+    count="$(awk -F '\t' -v backend="$backend" '$1 == backend { print $2; exit }' "$state" 2>/dev/null || true)"
+    if ! [[ "$count" =~ ^[0-9]+$ ]]; then
+        count=0
+    fi
+    echo "$count"
+}
+
+lb_is_running() {
+    local pid
+    pid="$(cat "$(lb_pid_file)" 2>/dev/null || true)"
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+wait_instance_drain() {
+    local id="$1" timeout="$2" deadline active previous=-1 empty_since=0 now
+    if ! lb_should_enable; then
+        log "ℹ️ [实例${id}] LB 未启用，无法统计直连连接，跳过排空等待"
+        return 0
+    fi
+    if ! lb_is_running; then
+        log "⚠️ [实例${id}] LB 进程未运行，跳过排空等待，避免读取过期连接状态"
+        return 0
+    fi
+    if [ "$timeout" -le 0 ]; then
+        log "ℹ️ [实例${id}] 排空等待已关闭（ROTATE_RESTART_DRAIN_TIMEOUT=${timeout}）"
+        return 0
+    fi
+
+    deadline=$(( $(date +%s) + timeout ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        active="$(instance_active_lb_connections "$id")"
+        if [ "$active" -eq 0 ]; then
+            now="$(date +%s)"
+            if [ "$empty_since" -eq 0 ]; then
+                empty_since="$now"
+                log "⏳ [实例${id}] 连接数已归零，继续确认 ${DRAIN_EMPTY_GRACE_SECONDS}s"
+            elif [ $((now - empty_since)) -ge "$DRAIN_EMPTY_GRACE_SECONDS" ]; then
+                log "✅ [实例${id}] 已排空，开始硬重启"
+                return 0
+            fi
+        else
+            empty_since=0
+            if [ "$active" -ne "$previous" ]; then
+                log "⏳ [实例${id}] 等待 ${active} 个 LB 连接自然结束（最多 ${timeout}s）"
+                previous="$active"
+            fi
+        fi
+        sleep 1
+    done
+
+    active="$(instance_active_lb_connections "$id")"
+    log "⚠️ [实例${id}] 排空等待超时（剩余 ${active} 个 LB 连接），继续硬重启"
+    return 0
 }
 
 write_state() {
@@ -180,17 +250,20 @@ restart_instance_hard() {
 }
 
 rotate_one_instance() {
-    local id="$1"
+    local id="$1" drain_timeout
     local attempts timeout try
     attempts=$(( $(rotate_retries) + 1 ))
     timeout="$(rotate_probe_timeout)"
+    drain_timeout="$(rotate_drain_timeout)"
 
     echo "$id" > "${LOCK_DIR}/current_id" 2>/dev/null || true
     mark_instance_rotating "$id" "$$"
     # 给正在跑的 health-check tick 一点时间退出该实例
     sleep 1
     update_backend_health "$id" "down"
-    log "🔄 [实例${id}] 已从 LB 摘流，开始硬重启（最多 ${attempts} 次）"
+    log "🔄 [实例${id}] 已从 LB 摘流，等待现有连接排空（最多 ${drain_timeout}s）"
+    wait_instance_drain "$id" "$drain_timeout"
+    log "🔧 [实例${id}] 开始硬重启（最多 ${attempts} 次）"
 
     try=1
     while [ "$try" -le "$attempts" ]; do
@@ -224,7 +297,7 @@ run_round() {
     started="$(date +%s)"
     write_state last_start "$started"
     write_state last_result "running"
-    log "🚀 滚动重启本轮开始: instances=${INSTANCE_COUNT} interval=${ROTATE_RESTART_INTERVAL} probe=$(rotate_probe_timeout)s retries=$(rotate_retries)"
+    log "🚀 滚动重启本轮开始: instances=${INSTANCE_COUNT} interval=${ROTATE_RESTART_INTERVAL} drain=$(rotate_drain_timeout)s probe=$(rotate_probe_timeout)s retries=$(rotate_retries)"
 
     for id in $(instance_id_list); do
         total=$((total + 1))
@@ -293,7 +366,7 @@ show_status() {
     echo "ROTATE_RESTART_ENABLED=${ROTATE_RESTART_ENABLED} active=${enabled_txt}"
     echo "INSTANCE_COUNT=${INSTANCE_COUNT} min_count=${ROTATE_RESTART_MIN_COUNT:-4}"
     echo "interval=${ROTATE_RESTART_INTERVAL} (${interval}s)"
-    echo "probe_timeout=$(rotate_probe_timeout)s retries=$(rotate_retries)"
+    echo "drain_timeout=$(rotate_drain_timeout)s probe_timeout=$(rotate_probe_timeout)s retries=$(rotate_retries)"
     if [ -n "$due" ]; then
         echo "next_due=$(date -d "@${due}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "$due") epoch=${due}"
     else

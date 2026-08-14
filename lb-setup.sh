@@ -4,7 +4,7 @@
 source /usr/local/bin/warp-common.sh
 
 LOG_FILE="${WARP_LOG_ROOT:-/var/log/warp-gost}/lb.log"
-PID_FILE="${WARP_RUN_ROOT:-/var/lib/cloudflare-warp/.runtime}/lb.pid"
+PID_FILE="$(lb_pid_file)"
 mkdir -p "${WARP_LOG_ROOT:-/var/log/warp-gost}" "${WARP_RUN_ROOT:-/var/lib/cloudflare-warp/.runtime}"
 
 log() {
@@ -23,12 +23,14 @@ start_lb() {
     fi
 
     write_backends_file
-    export LB_PORT LB_STRATEGY
+    export LB_PORT LB_STRATEGY LB_ROTATE_INTERVAL
     export LB_BACKENDS_FILE
     LB_BACKENDS_FILE="$(backends_file)"
     export LB_BACKENDS_FILE
+    LB_CONNECTION_STATE_FILE="$(lb_connection_state_file)"
+    export LB_CONNECTION_STATE_FILE
 
-    log "启动 LB :${LB_PORT} strategy=${LB_STRATEGY} backends=$(cat "$(backends_file)" | tr '\n' ' ')"
+    log "启动 LB :${LB_PORT} strategy=${LB_STRATEGY} rotate_interval=${LB_ROTATE_INTERVAL} backends=$(cat "$(backends_file)" | tr '\n' ' ')"
     python3 /usr/local/bin/lb-proxy.py >>"$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"
 
@@ -52,7 +54,7 @@ stop_lb() {
 
 status_lb() {
     if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-        echo "LB: running pid=$(cat "$PID_FILE") port=${LB_PORT} strategy=${LB_STRATEGY}"
+        echo "LB: running pid=$(cat "$PID_FILE") port=${LB_PORT} strategy=${LB_STRATEGY} rotate_interval=${LB_ROTATE_INTERVAL}"
         echo "Backends:"
         cat "$(backends_file)" 2>/dev/null | sed 's/^/  /'
     else

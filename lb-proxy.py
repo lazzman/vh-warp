@@ -4,13 +4,12 @@
 Strategies (LB_STRATEGY):
   round   - round-robin
   random  - random backend
-  hash    - sticky by client IP
-  sticky  - sticky by SOCKS5/HTTP username when present, else round-robin
-            (username always wins when provided, regardless of strategy)
+  hash    - 按客户端 IP 的 Rendezvous 哈希
+  rotate  - 按固定时间窗口统一切换后端
 
-Sticky usage:
+基于 id 的路由：
   socks5h://my-session-id@127.0.0.1:1110
-  Same id always maps to the same backend (hash mod N).
+  同一 id 通过 Rendezvous 哈希固定映射到同一后端（rotate 策略除外）。
 
 Backends file (LB_BACKENDS_FILE): one host:port per line.
 Reloaded automatically when mtime changes.
@@ -22,17 +21,22 @@ import errno
 import hashlib
 import os
 import random
+import re
 import select
 import socket
 import struct
 import threading
 import time
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 LB_PORT = int(os.environ.get("LB_PORT", "1110"))
 LB_STRATEGY = os.environ.get("LB_STRATEGY", "round").strip().lower()
+LB_ROTATE_INTERVAL = os.environ.get("LB_ROTATE_INTERVAL", "5m").strip()
 BACKENDS_FILE = os.environ.get(
     "LB_BACKENDS_FILE", "/var/lib/cloudflare-warp/.runtime/backends.txt"
+)
+BACKEND_CONNECTION_STATE_FILE = os.environ.get(
+    "LB_CONNECTION_STATE_FILE", "/var/lib/cloudflare-warp/.runtime/lb-connections.txt"
 )
 LISTEN_ADDR = os.environ.get("LB_LISTEN", "0.0.0.0")
 BUFFER = 64 * 1024
@@ -50,11 +54,152 @@ _backends_mtime = -1.0
 _conn_sem = threading.BoundedSemaphore(MAX_CONN)
 _active_conn = 0
 _active_lock = threading.Lock()
+_backend_connections: Dict[Tuple[str, int], int] = {}
+_backend_connections_lock = threading.Lock()
+_rotate_started_at = time.monotonic()
+_rotate_slot = 0
+_rotate_target: Optional[Tuple[str, int]] = None
+_rotate_backend: Optional[Tuple[str, int]] = None
+_rotate_backend_order: List[Tuple[str, int]] = []
 
 
 def log(msg: str) -> None:
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{ts}] [lb] {msg}", flush=True)
+
+
+def write_backend_connection_state() -> None:
+    """将各后端正在处理的连接数原子写入运行时状态文件。"""
+    directory = os.path.dirname(BACKEND_CONNECTION_STATE_FILE) or "."
+    temporary = (
+        f"{BACKEND_CONNECTION_STATE_FILE}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    try:
+        os.makedirs(directory, exist_ok=True)
+        with open(temporary, "w", encoding="utf-8") as f:
+            for (host, port), count in sorted(_backend_connections.items()):
+                if count > 0:
+                    f.write(f"{host}:{port}\t{count}\n")
+        os.replace(temporary, BACKEND_CONNECTION_STATE_FILE)
+    except OSError as e:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        log(f"写入后端连接状态失败: {e}")
+
+
+def track_backend_connection(backend: Tuple[str, int], delta: int) -> None:
+    """更新后端连接计数；摘流重启据此等待现有连接自然结束。"""
+    with _backend_connections_lock:
+        count = _backend_connections.get(backend, 0) + delta
+        if count > 0:
+            _backend_connections[backend] = count
+        else:
+            _backend_connections.pop(backend, None)
+        write_backend_connection_state()
+
+
+def parse_rotate_interval_seconds(raw: str) -> int:
+    """解析定时轮换间隔；不带单位的数字按分钟处理。"""
+    value = raw.strip().lower()
+    if not value:
+        raise ValueError("empty interval")
+
+    match = re.fullmatch(r"(\d+)([smhd]?)", value)
+    if not match:
+        raise ValueError(f"invalid interval: {raw}")
+
+    amount = int(match.group(1))
+    unit = match.group(2)
+    if amount <= 0:
+        raise ValueError(f"interval must be positive: {raw}")
+
+    # 此策略面向“每 N 分钟”的配置；裸数字保持该直觉，显式单位可精确到秒。
+    multiplier = {"": 60, "s": 1, "m": 60, "h": 3600, "d": 86400}[unit]
+    return amount * multiplier
+
+
+try:
+    LB_ROTATE_INTERVAL_SECONDS = parse_rotate_interval_seconds(LB_ROTATE_INTERVAL)
+except ValueError as e:
+    LB_ROTATE_INTERVAL_SECONDS = 5 * 60
+    log(f"无效 LB_ROTATE_INTERVAL={LB_ROTATE_INTERVAL!r} ({e})，回退为 5m")
+
+
+def rotate_window_slot(elapsed_seconds: float) -> int:
+    """返回从 LB 启动开始经过的时间窗口编号。"""
+    return int(max(0.0, elapsed_seconds) // LB_ROTATE_INTERVAL_SECONDS)
+
+
+def next_healthy_rotate_backend(
+    backends: List[Tuple[str, int]], current: Optional[Tuple[str, int]]
+) -> Tuple[str, int]:
+    """从固定实例顺序中选择 current 的下一个健康后端。"""
+    if current not in _rotate_backend_order:
+        return backends[0]
+
+    start = _rotate_backend_order.index(current)
+    for offset in range(1, len(_rotate_backend_order) + 1):
+        candidate = _rotate_backend_order[
+            (start + offset) % len(_rotate_backend_order)
+        ]
+        if candidate in backends:
+            return candidate
+    return backends[0]
+
+
+def next_rotate_target(current: Optional[Tuple[str, int]]) -> Tuple[str, int]:
+    """按固定实例顺序推进轮换目标，不受当前健康状态影响。"""
+    if current not in _rotate_backend_order:
+        return _rotate_backend_order[0]
+    current_index = _rotate_backend_order.index(current)
+    return _rotate_backend_order[
+        (current_index + 1) % len(_rotate_backend_order)
+    ]
+
+
+def healthy_backend_for_rotate_target(
+    backends: List[Tuple[str, int]], target: Tuple[str, int]
+) -> Tuple[str, int]:
+    """优先使用轮换目标；目标摘流时才选择下一个健康实例。"""
+    if target in backends:
+        return target
+    return next_healthy_rotate_backend(backends, target)
+
+
+def pick_rotate_backend(backends: List[Tuple[str, int]]) -> Tuple[str, int]:
+    """选择定时轮换后端，并在摘流时平滑故障转移。"""
+    global _rotate_backend, _rotate_slot, _rotate_target
+
+    target_slot = rotate_window_slot(time.monotonic() - _rotate_started_at)
+    with _lock:
+        # 保留实例首次出现的顺序。健康列表在滚动重启时临时移除实例，
+        # 不能因此改变本轮目标或打乱“下一个实例”的顺序。
+        for backend in backends:
+            if backend not in _rotate_backend_order:
+                _rotate_backend_order.append(backend)
+
+        if _rotate_target is None:
+            _rotate_target = backends[0]
+            _rotate_backend = _rotate_target
+
+        # 轮换进度仅由单调时钟推进，不受实例重启或后端文件热更新影响。
+        while _rotate_slot < target_slot:
+            _rotate_target = next_rotate_target(_rotate_target)
+            _rotate_backend = healthy_backend_for_rotate_target(
+                backends, _rotate_target
+            )
+            _rotate_slot += 1
+
+        # 定时滚动重启会先将目标实例从健康列表摘除。此时仅故障转移到
+        # 下一个健康实例；待原实例恢复后，本时间窗口仍保持当前故障转移目标。
+        if _rotate_backend not in backends:
+            _rotate_backend = healthy_backend_for_rotate_target(
+                backends, _rotate_target
+            )
+
+        return _rotate_backend
 
 
 def close_quiet(sock: Optional[socket.socket]) -> None:
@@ -104,9 +249,27 @@ def load_backends(force: bool = False) -> List[Tuple[str, int]]:
         return list(_backends)
 
 
-def sticky_index(key: str, n: int) -> int:
-    h = hashlib.sha256(key.encode("utf-8", errors="ignore")).digest()
-    return int.from_bytes(h[:8], "big") % n
+def rendezvous_score(key: str, backend: Tuple[str, int]) -> bytes:
+    """计算 key 与后端组合的稳定权重。"""
+    key_bytes = key.encode("utf-8", errors="ignore")
+    backend_bytes = f"{backend[0]}:{backend[1]}".encode("utf-8")
+    h = hashlib.sha256()
+    h.update(len(key_bytes).to_bytes(4, "big"))
+    h.update(key_bytes)
+    h.update(backend_bytes)
+    return h.digest()
+
+
+def rendezvous_backend(
+    key: str, backends: List[Tuple[str, int]]
+) -> Tuple[str, int]:
+    """使用最高随机权重哈希选择后端。
+
+    相比哈希取模，实例新增时只有权重高于原后端的 key 会迁移到新实例；
+    实例移除时也只迁移原本落在该实例上的 key。等权后端和大量离散 key
+    的分布会趋于均匀。
+    """
+    return max(backends, key=lambda backend: rendezvous_score(key, backend))
 
 
 def pick_backend(
@@ -117,17 +280,18 @@ def pick_backend(
         return None
     n = len(backends)
 
-    # Username always enables sticky mapping when present
-    if username:
-        return backends[sticky_index(username, n)]
-
     strategy = LB_STRATEGY
-    if strategy in ("sticky", "hash"):
-        # sticky without user → fall back to client-IP hash for hash;
-        # sticky strategy without user → round
-        if strategy == "hash":
-            return backends[sticky_index(client_ip or "0.0.0.0", n)]
-        strategy = "round"
+    if strategy in ("rotate", "timed", "interval"):
+        # 定时轮换必须先于用户名粘性处理，才能保证同一时间窗口内的
+        # 所有新连接都使用同一个后端。
+        return pick_rotate_backend(backends)
+
+    # 除定时轮换外，用户名始终启用粘性映射。
+    if username:
+        return rendezvous_backend(username, backends)
+
+    if strategy == "hash":
+        return rendezvous_backend(client_ip or "0.0.0.0", backends)
 
     if strategy == "random":
         return random.choice(backends)
@@ -194,6 +358,8 @@ def handle_socks5(client: socket.socket, first: bytes, client_ip: str) -> None:
     client.settimeout(HANDSHAKE_TIMEOUT)
     upstream: Optional[socket.socket] = None
     handed_off = False
+    backend: Optional[Tuple[str, int]] = None
+    backend_tracked = False
     try:
         # first already has at least 1 byte (0x05); read rest of greeting
         data = first
@@ -258,6 +424,10 @@ def handle_socks5(client: socket.socket, first: bytes, client_ip: str) -> None:
         if not backend:
             client.sendall(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
             return
+        # 从选中后端起即开始计数，覆盖与后端握手中的连接，避免摘流后
+        # 仍有刚完成选择的连接穿透排空窗口。
+        track_backend_connection(backend, 1)
+        backend_tracked = True
 
         try:
             upstream = connect_backend(backend)
@@ -310,6 +480,8 @@ def handle_socks5(client: socket.socket, first: bytes, client_ip: str) -> None:
         handed_off = True
         relay(client, upstream)
     finally:
+        if backend_tracked and backend:
+            track_backend_connection(backend, -1)
         if not handed_off:
             close_quiet(upstream)
             # client closed by handle_client finally
@@ -319,6 +491,8 @@ def handle_http(client: socket.socket, first: bytes, client_ip: str) -> None:
     client.settimeout(HANDSHAKE_TIMEOUT)
     upstream: Optional[socket.socket] = None
     handed_off = False
+    backend: Optional[Tuple[str, int]] = None
+    backend_tracked = False
     try:
         # Read full headers
         data = first
@@ -360,6 +534,8 @@ def handle_http(client: socket.socket, first: bytes, client_ip: str) -> None:
         if not backend:
             client.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
             return
+        track_backend_connection(backend, 1)
+        backend_tracked = True
 
         try:
             upstream = connect_backend(backend)
@@ -367,7 +543,7 @@ def handle_http(client: socket.socket, first: bytes, client_ip: str) -> None:
             client.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
             return
 
-        # Forward original request; strip proxy-authorization (sticky id only)
+        # 转发原请求；移除仅用于路由的 Proxy-Authorization。
         out_lines = [request_line]
         for line in lines[1:]:
             if line.lower().startswith("proxy-authorization:"):
@@ -390,6 +566,8 @@ def handle_http(client: socket.socket, first: bytes, client_ip: str) -> None:
         handed_off = True
         relay(client, upstream)
     finally:
+        if backend_tracked and backend:
+            track_backend_connection(backend, -1)
         if not handed_off:
             close_quiet(upstream)
 
@@ -429,6 +607,8 @@ def handle_client(client: socket.socket, addr) -> None:
 
 def serve() -> None:
     load_backends(force=True)
+    with _backend_connections_lock:
+        write_backend_connection_state()
     if not _backends:
         log(f"warning: no backends in {BACKENDS_FILE}, waiting...")
 
@@ -439,6 +619,7 @@ def serve() -> None:
     sock.settimeout(1.0)
     log(
         f"listening on {LISTEN_ADDR}:{LB_PORT} strategy={LB_STRATEGY} "
+        f"rotate_interval={LB_ROTATE_INTERVAL}({LB_ROTATE_INTERVAL_SECONDS}s) "
         f"max_conn={MAX_CONN} idle={IDLE_TIMEOUT}s hs={HANDSHAKE_TIMEOUT}s "
         f"backends_file={BACKENDS_FILE}"
     )
@@ -493,6 +674,9 @@ def serve() -> None:
                 time.sleep(0.2)
     finally:
         close_quiet(sock)
+        with _backend_connections_lock:
+            _backend_connections.clear()
+            write_backend_connection_state()
 
 
 if __name__ == "__main__":

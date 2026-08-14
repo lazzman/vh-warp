@@ -8,14 +8,27 @@ HEALTH_CHECK_INTERVAL="${HEALTH_CHECK_INTERVAL:-60}"
 HEALTH_SOFT_FAILURES="${HEALTH_SOFT_FAILURES:-3}"
 HEALTH_FALLBACK_AFTER="${HEALTH_FALLBACK_AFTER:-600}"
 HEALTH_PROBE_TIMEOUT="${HEALTH_PROBE_TIMEOUT:-8}"
+# 1：每轮输出完整状态表到 Docker 控制台；0：只写 health-check.log。
+STATUS_EVENT_LOG="${STATUS_EVENT_LOG:-1}"
 WARP_REGISTRATION_TIMEOUT="${WARP_REGISTRATION_TIMEOUT:-60}"
 WARP_CONNECT_TIMEOUT="${WARP_CONNECT_TIMEOUT:-180}"
 
-source /usr/local/bin/warp-common.sh
+COMMON_SCRIPT="/usr/local/bin/warp-common.sh"
+if [ ! -f "$COMMON_SCRIPT" ]; then
+    COMMON_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/warp-common.sh"
+fi
+source "$COMMON_SCRIPT"
 mkdir -p "${WARP_LOG_ROOT}" "$WARP_RUN_ROOT"
 
 log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+}
+
+status_table_log_enabled() {
+    case "${STATUS_EVENT_LOG:-1}" in
+        0|false|FALSE|no|NO|off|OFF) return 1 ;;
+        *) return 0 ;;
+    esac
 }
 
 pushdeer_send() {
@@ -34,6 +47,121 @@ pushdeer_send() {
 state_file() {
     local id="$1"
     echo "$(instance_run_dir "$id")/health-state.txt"
+}
+
+# 保存最近一次对外可见状态的签名，用于标记本轮状态表中的变化实例。
+readiness_signature_file() {
+    local id="$1"
+    echo "$(instance_run_dir "$id")/readiness-signature.txt"
+}
+
+readiness_line_file() {
+    local id="$1"
+    echo "$(instance_run_dir "$id")/readiness-last-line.txt"
+}
+
+# 本轮状态表：保存最新快照及其标记。🔄 表示本轮发生变化，🆕 表示首次观测，⏸️ 表示滚动重启跳过。
+declare -a HEALTH_ROUND_LINES
+declare -a HEALTH_ROUND_MARKS
+HEALTH_ROUND_NUMBER=0
+READINESS_TRANSITION_KIND="unchanged"
+
+readiness_signature_from_line() {
+    local line="$1" readiness ip warp colo
+    readiness="$(instance_info_field "$line" "readiness")"
+    ip="$(instance_info_field "$line" "ip")"
+    warp="$(instance_info_field "$line" "warp")"
+    colo="$(instance_info_field "$line" "colo")"
+    echo "${readiness}|${ip}|${warp}|${colo}"
+}
+
+# 接收 instance_info_line 的单行快照：首次记录基线；后续状态或出口变化会标记到本轮状态表。
+report_readiness_transition() {
+    local id="$1" line="$2" signature_file line_file previous current
+    signature_file="$(readiness_signature_file "$id")"
+    line_file="$(readiness_line_file "$id")"
+    mkdir -p "$(dirname "$signature_file")"
+    current="$(readiness_signature_from_line "$line")"
+    previous="$(cat "$signature_file" 2>/dev/null || true)"
+    echo "$line" > "$line_file"
+    READINESS_TRANSITION_KIND="unchanged"
+
+    if [ -z "$previous" ]; then
+        echo "$current" > "$signature_file"
+        READINESS_TRANSITION_KIND="initial"
+        # 启动横幅已有完整快照，基线只写文件，避免与并行启动输出交错。
+        log "📍 [实例${id}] 初始就绪状态: ${current} | ${line}"
+    elif [ "$previous" != "$current" ]; then
+        echo "$current" > "$signature_file"
+        READINESS_TRANSITION_KIND="changed"
+        log "🔄 [实例${id}] 就绪状态变化: ${previous} → ${current} | ${line}"
+    fi
+}
+
+begin_health_round() {
+    HEALTH_ROUND_LINES=()
+    HEALTH_ROUND_MARKS=()
+}
+
+record_health_round_line() {
+    local id="$1" line="$2" transition="${3:-unchanged}" old_mark
+    HEALTH_ROUND_LINES[$id]="$line"
+    old_mark="${HEALTH_ROUND_MARKS[$id]:-}"
+    case "$transition" in
+        changed) HEALTH_ROUND_MARKS[$id]="🔄" ;;
+        initial)
+            [ "$old_mark" = "🔄" ] || HEALTH_ROUND_MARKS[$id]="🆕"
+            ;;
+        skipped)
+            [ -n "$old_mark" ] || HEALTH_ROUND_MARKS[$id]="⏸️"
+            ;;
+        *)
+            [ -n "$old_mark" ] || HEALTH_ROUND_MARKS[$id]="·"
+            ;;
+    esac
+}
+
+health_round_line_for() {
+    local id="$1" line
+    line="${HEALTH_ROUND_LINES[$id]:-}"
+    if [ -z "$line" ]; then
+        line="$(cat "$(readiness_line_file "$id")" 2>/dev/null || true)"
+    fi
+    if [ -z "$line" ]; then
+        line="instance-${id} port=$(instance_port "$id") readiness=probe_failed cli=unavailable trace=failed curl_rc=n/a error=not_probed"
+    fi
+    echo "$line"
+}
+
+emit_health_status_table() {
+    local id line mark formatted readiness table
+    local ready_count=0 waiting_count=0 direct_count=0 probe_failed_count=0 service_down_count=0 skipped_count=0
+    HEALTH_ROUND_NUMBER=$((HEALTH_ROUND_NUMBER + 1))
+    table="[$(date +'%Y-%m-%d %H:%M:%S')] 📊 WARP 健康状态第 ${HEALTH_ROUND_NUMBER} 轮（🔄 本轮变化 · 未变化 🆕 首次 ⏸️ 跳过）"
+
+    for id in $(instance_id_list); do
+        line="$(health_round_line_for "$id")"
+        mark="${HEALTH_ROUND_MARKS[$id]:-·}"
+        formatted="$(format_instance_info_line "$line")"
+        table="${table}
+  ${mark} ${formatted}"
+        readiness="$(instance_info_field "$line" "readiness")"
+        case "$readiness" in
+            ready) ready_count=$((ready_count + 1)) ;;
+            waiting) waiting_count=$((waiting_count + 1)) ;;
+            direct) direct_count=$((direct_count + 1)) ;;
+            service_down) service_down_count=$((service_down_count + 1)) ;;
+            *) probe_failed_count=$((probe_failed_count + 1)) ;;
+        esac
+        [ "$mark" = "⏸️" ] && skipped_count=$((skipped_count + 1))
+    done
+    table="${table}
+  汇总：ready=${ready_count} waiting=${waiting_count} direct=${direct_count} probe_failed=${probe_failed_count} service_down=${service_down_count} skipped=${skipped_count}"
+
+    printf '%b\n' "$table" >> "$LOG_FILE"
+    if status_table_log_enabled; then
+        printf '%b\n' "$table"
+    fi
 }
 
 failure_since_file() {
@@ -183,22 +311,17 @@ restart_gost_for() {
     check_gost_listening "$id"
 }
 
-probe_proxy_url() {
-    local addr="$1" url="$2" result rc
-    result=$(curl -sS --max-time "$HEALTH_PROBE_TIMEOUT" --socks5-hostname "$addr" "$url" 2>&1)
-    rc=$?
-    if [ "$rc" -eq 0 ] && echo "$result" | grep -qE '^warp=(on|plus)$'; then
-        return 0
-    fi
-    log "🔎 代理探针失败: addr=$addr url=$url curl_rc=$rc warp=$(echo "$result" | grep -E '^warp=' | head -1 | tr -d '\r')"
-    return 1
-}
-
 check_proxy_instance() {
-    local id="$1" addr
-    addr="$(instance_proxy_addr "$id")"
-    probe_proxy_url "$addr" "https://www.cloudflare.com/cdn-cgi/trace" || \
-        probe_proxy_url "$addr" "https://one.one.one.one/cdn-cgi/trace"
+    local id="$1" line readiness
+    # 与启动横幅共用同一份真实就绪判定：只有 trace 实测 warp=on/plus 才算健康。
+    line="$(instance_info_line "$id" "$HEALTH_PROBE_TIMEOUT" 2>&1 || true)"
+    if [ -z "$line" ]; then
+        line="instance-${id} readiness=probe_failed trace=failed error=status_command_failed"
+    fi
+    report_readiness_transition "$id" "$line"
+    record_health_round_line "$id" "$line" "$READINESS_TRANSITION_KIND"
+    readiness="$(instance_info_field "$line" "readiness")"
+    [ "$readiness" = "ready" ]
 }
 
 check_direct_network() {
@@ -491,6 +614,7 @@ check_one_instance() {
 
     if instance_rotate_in_progress "$id"; then
         log "⏸️ [实例${id}] 定时滚动重启进行中，本轮健康检查跳过"
+        record_health_round_line "$id" "$(health_round_line_for "$id")" "skipped"
         return 0
     fi
 
@@ -561,17 +685,23 @@ monitor_loop() {
 
     for id in $(instance_id_list); do
         mkdir -p "$(instance_run_dir "$id")"
+        # 每次守护进程启动重新建立基线，首轮状态表会以 🆕 标出。
+        rm -f "$(readiness_signature_file "$id")"
         echo "MONITORING" > "$(state_file "$id")"
         update_backend_health "$id" "up"
     done
 
     while true; do
+        begin_health_round
         for id in $(instance_id_list); do
             check_one_instance "$id" || true
         done
+        emit_health_status_table
         sleep "$HEALTH_CHECK_INTERVAL"
     done
 }
 
-log "🩺 健康检测守护进程启动中 (instances=${INSTANCE_COUNT})"
-monitor_loop
+if [ "${HEALTH_CHECK_LIB_ONLY:-0}" != "1" ]; then
+    log "🩺 健康检测守护进程启动中 (instances=${INSTANCE_COUNT})"
+    monitor_loop
+fi

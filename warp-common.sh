@@ -4,7 +4,8 @@
 INSTANCE_COUNT="${INSTANCE_COUNT:-1}"
 BASE_PORT="${BASE_PORT:-1111}"
 LB_PORT="${LB_PORT:-1110}"
-LB_STRATEGY="${LB_STRATEGY:-round}"   # round | random | hash | sticky
+LB_STRATEGY="${LB_STRATEGY:-round}"   # round | random | hash | rotate
+LB_ROTATE_INTERVAL="${LB_ROTATE_INTERVAL:-5m}"  # rotate 策略切换间隔；裸数字按分钟
 LB_ENABLED="${LB_ENABLED:-auto}"      # auto | 1 | 0  (auto: count>1 时开启)
 
 # 定时滚动硬重启：auto 时 INSTANCE_COUNT>=4 启用；1/0 强制
@@ -12,6 +13,7 @@ ROTATE_RESTART_ENABLED="${ROTATE_RESTART_ENABLED:-auto}"
 ROTATE_RESTART_INTERVAL="${ROTATE_RESTART_INTERVAL:-6h}"
 ROTATE_RESTART_PROBE_TIMEOUT="${ROTATE_RESTART_PROBE_TIMEOUT:-90}"
 ROTATE_RESTART_RETRIES="${ROTATE_RESTART_RETRIES:-2}"
+ROTATE_RESTART_DRAIN_TIMEOUT="${ROTATE_RESTART_DRAIN_TIMEOUT:-120}"
 ROTATE_RESTART_MIN_COUNT="${ROTATE_RESTART_MIN_COUNT:-4}"
 
 WARP_DATA_ROOT="${WARP_DATA_ROOT:-/var/lib/cloudflare-warp}"
@@ -308,6 +310,23 @@ backends_meta_file() {
     echo "${WARP_RUN_ROOT}/backends.meta"
 }
 
+lb_connection_state_file() {
+    echo "${WARP_RUN_ROOT}/lb-connections.txt"
+}
+
+lb_pid_file() {
+    echo "${WARP_RUN_ROOT}/lb.pid"
+}
+
+instance_backend_addr() {
+    local id="${1:-0}"
+    if [ "$INSTANCE_COUNT" -eq 1 ]; then
+        echo "127.0.0.1:$(instance_port "$id")"
+    else
+        echo "$(instance_ns_ip "$id"):${INSTANCE_GOST_PORT}"
+    fi
+}
+
 # 写入当前健康后端：每行 host:port
 write_backends_file() {
     local out tmp id ip
@@ -387,13 +406,22 @@ set_instance_context() {
 }
 
 # 在实例环境中执行命令
-# 单实例：直接执行；多实例：ip netns exec + 必要时已在 mount 命名空间内
+# 单实例：直接执行；多实例：进入 supervisor 所在的 mount + net 命名空间，
+# 这样 warp-cli 才能访问该实例私有 /run 中的 D-Bus 与 WARP socket。
 instance_exec() {
     local id="${CURRENT_INSTANCE_ID:-0}"
     if [ "$INSTANCE_COUNT" -eq 1 ]; then
         "$@"
     else
-        ip netns exec "$(instance_netns "$id")" "$@"
+        local run_dir spid
+        run_dir="$(instance_run_dir "$id")"
+        spid="$(cat "${run_dir}/supervisor.pid" 2>/dev/null || true)"
+        if [ -n "$spid" ] && [ -d "/proc/$spid" ]; then
+            nsenter --target "$spid" --mount --net "$@"
+        else
+            # supervisor 尚未写入 PID 时保留原有回退路径，方便启动阶段诊断。
+            ip netns exec "$(instance_netns "$id")" "$@"
+        fi
     fi
 }
 
@@ -554,10 +582,153 @@ probe_instance_trace() {
     return 0
 }
 
+# 将诊断字段压缩为单行安全值，便于写入控制台与日志。
+status_field_value() {
+    local value="${1:-}"
+    value="$(printf '%s' "$value" | tr '\r\n|' '   ' | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')"
+    value="${value:0:160}"
+    printf '%s' "${value:-none}"
+}
+
+# 从 instance_info_line 的机器可读单行记录中取字段。字段值不能含空格。
+instance_info_field() {
+    local line="$1" key="$2" token
+    for token in $line; do
+        case "$token" in
+            "${key}="*)
+                echo "${token#*=}"
+                return 0
+                ;;
+        esac
+    done
+    echo "n/a"
+}
+
+# 将 curl 返回码翻译成简短的控制台诊断；完整错误仍保留在机器记录和 health-check.log。
+instance_probe_reason() {
+    local line="$1" rc
+    rc="$(instance_info_field "$line" "curl_rc")"
+    case "$rc" in
+        97) echo "SOCKS5_未就绪" ;;
+        28) echo "探测超时" ;;
+        7) echo "代理连接失败" ;;
+        6) echo "DNS_解析失败" ;;
+        35|56) echo "TLS_连接失败" ;;
+        n/a|0) echo "trace_无有效响应" ;;
+        *) echo "curl=${rc}" ;;
+    esac
+}
+
+# 启动横幅使用的简短展示行；完整机器记录继续写入 entrypoint.log / status 命令。
+format_instance_info_line() {
+    local line="$1" first id port readiness cli ip warp colo warp_proc gost_proc reason
+    first="${line%% *}"
+    id="${first#instance-}"
+    port="$(instance_info_field "$line" "port")"
+    readiness="$(instance_info_field "$line" "readiness")"
+    cli="$(instance_info_field "$line" "cli")"
+    ip="$(instance_info_field "$line" "ip")"
+    warp="$(instance_info_field "$line" "warp")"
+    colo="$(instance_info_field "$line" "colo")"
+    warp_proc="$(printf '%s' "$line" | sed -n 's/.*proc(warp=\([^,)]*\).*/\1/p')"
+    gost_proc="$(printf '%s' "$line" | sed -n 's/.*gost=\([^)]*\)).*/\1/p')"
+
+    case "$readiness" in
+        ready)
+            printf '✅ 实例%-2s :%-5s 已就绪  IP=%-39s WARP=%-4s %s' \
+                "$id" "$port" "$ip" "$warp" "$colo"
+            ;;
+        waiting)
+            printf '⏳ 实例%-2s :%-5s 建连中  CLI=%s' "$id" "$port" "$cli"
+            ;;
+        direct)
+            printf '⚠️  实例%-2s :%-5s 直连中  IP=%-39s WARP=%s' \
+                "$id" "$port" "$ip" "$warp"
+            ;;
+        service_down)
+            printf '❌ 实例%-2s :%-5s 服务未就绪  warp-svc=%s gost=%s' \
+                "$id" "$port" "${warp_proc:-?}" "${gost_proc:-?}"
+            ;;
+        *)
+            reason="$(instance_probe_reason "$line")"
+            printf '⚠️  实例%-2s :%-5s 探测失败  CLI=%-12s 原因=%s' \
+                "$id" "$port" "$cli" "$reason"
+            ;;
+    esac
+}
+
+# 经实例代理探测 trace，并保留失败端点、curl 返回码与错误摘要。
+# 输出: trace=ok|endpoint=...|curl_rc=0|error=none|ip=...|warp=...|loc=...|colo=...|http=...
+# 失败时仍输出诊断字段并返回 1，供启动横幅区分“建连中”和“探测失败”。
+probe_instance_trace_detail() {
+    local id="${1:-0}"
+    local timeout="${2:-10}"
+    local addr endpoint endpoint_name trace err_file err rc
+    local last_endpoint="none" last_rc="?" last_err="none"
+    addr="$(instance_proxy_addr "$id")"
+
+    for endpoint in \
+        "https://www.cloudflare.com/cdn-cgi/trace" \
+        "https://one.one.one.one/cdn-cgi/trace"; do
+        endpoint_name="${endpoint#https://}"
+        err_file="$(mktemp)"
+        trace="$(curl -4 -sS --max-time "$timeout" --socks5-hostname "$addr" \
+            "$endpoint" 2>"$err_file")"
+        rc=$?
+        err="$(cat "$err_file" 2>/dev/null || true)"
+        rm -f "$err_file"
+
+        if [ "$rc" -eq 0 ] && [ -n "$trace" ] && echo "$trace" | grep -q '^ip='; then
+            local ip warp loc colo http
+            ip="$(echo "$trace" | awk -F= '/^ip=/{print $2; exit}' | tr -d '\r')"
+            warp="$(echo "$trace" | awk -F= '/^warp=/{print $2; exit}' | tr -d '\r')"
+            loc="$(echo "$trace" | awk -F= '/^loc=/{print $2; exit}' | tr -d '\r')"
+            colo="$(echo "$trace" | awk -F= '/^colo=/{print $2; exit}' | tr -d '\r')"
+            http="$(echo "$trace" | awk -F= '/^http=/{print $2; exit}' | tr -d '\r')"
+            printf 'trace=ok|endpoint=%s|curl_rc=0|error=none|ip=%s|warp=%s|loc=%s|colo=%s|http=%s\n' \
+                "$endpoint_name" "$ip" "${warp:-?}" "${loc:-?}" "${colo:-?}" "${http:-?}"
+            return 0
+        fi
+
+        last_endpoint="$endpoint_name"
+        last_rc="$rc"
+        if [ "$rc" -eq 0 ]; then
+            last_err="trace_response_missing_ip"
+        else
+            last_err="$(status_field_value "$err")"
+        fi
+    done
+
+    printf 'trace=failed|endpoint=%s|curl_rc=%s|error=%s\n' \
+        "$last_endpoint" "$last_rc" "$last_err"
+    return 1
+}
+
+# 将 warp-cli 的实际连接状态归一化。多实例时必须进入 supervisor 的 mount 命名空间。
+# 输出: connected | connecting | disconnected | unknown | unavailable
+warp_connection_state() {
+    local status rc
+    status="$(warp_cli_cmd status 2>&1)"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        echo "unavailable"
+    elif echo "$status" | grep -q "Connected"; then
+        echo "connected"
+    elif echo "$status" | grep -qi "Connecting"; then
+        echo "connecting"
+    elif echo "$status" | grep -qi "Disconnected"; then
+        echo "disconnected"
+    else
+        echo "unknown"
+    fi
+}
+
 # 单行实例摘要（含 WARP 出口 IP）；供 status / 启动横幅使用
 instance_info_line() {
     local id="${1:-0}"
-    local port warp_st gost_st acct info egress_ip warp_flag loc colo ns t
+    local probe_timeout="${2:-8}"
+    local port warp_st gost_st acct cli_state info egress_ip warp_flag loc colo ns
+    local readiness trace_state endpoint curl_rc probe_error
     port="$(instance_port "$id")"
     set_instance_context "$id"
 
@@ -572,26 +743,40 @@ instance_info_line() {
 
     # 账户类型：多实例下经 instance 上下文执行 warp-cli
     acct="$(get_account_type 2>/dev/null || echo "?")"
+    cli_state="$(warp_connection_state 2>/dev/null || echo "unavailable")"
 
-    # 刚启动时代理可能未就绪，轻量重试
-    info=""
-    for t in 1 2 3; do
-        if info="$(probe_instance_trace "$id" 8)"; then
-            break
-        fi
-        sleep 1
-    done
+    # 启动横幅只做一次、带错误信息的快照；持续重试交给健康检测守护进程。
+    info="$(probe_instance_trace_detail "$id" "$probe_timeout")" || true
+    trace_state="${info#trace=}"
+    trace_state="${trace_state%%|*}"
+    endpoint="${info#*endpoint=}"
+    endpoint="${endpoint%%|*}"
+    curl_rc="${info#*curl_rc=}"
+    curl_rc="${curl_rc%%|*}"
+    probe_error="${info#*error=}"
+    probe_error="${probe_error%%|*}"
 
-    if [ -n "$info" ]; then
+    if [ "$trace_state" = "ok" ]; then
         egress_ip="${info#*ip=}"; egress_ip="${egress_ip%%|*}"
         warp_flag="${info#*warp=}"; warp_flag="${warp_flag%%|*}"
         loc="${info#*loc=}"; loc="${loc%%|*}"
         colo="${info#*colo=}"; colo="${colo%%|*}"
-        printf 'instance-%s port=%s proc(warp=%s,gost=%s) account=%s ip=%s warp=%s loc=%s colo=%s\n' \
-            "$id" "$port" "$warp_st" "$gost_st" "$acct" "$egress_ip" "$warp_flag" "$loc" "$colo"
+        case "$warp_flag" in
+            on|plus) readiness="ready" ;;
+            *) readiness="direct" ;;
+        esac
+        printf 'instance-%s port=%s readiness=%s proc(warp=%s,gost=%s) account=%s cli=%s trace=ok endpoint=%s ip=%s warp=%s loc=%s colo=%s\n' \
+            "$id" "$port" "$readiness" "$warp_st" "$gost_st" "$acct" "$cli_state" "$endpoint" "$egress_ip" "$warp_flag" "$loc" "$colo"
     else
-        printf 'instance-%s port=%s proc(warp=%s,gost=%s) account=%s ip=n/a warp=n/a loc=n/a colo=n/a\n' \
-            "$id" "$port" "$warp_st" "$gost_st" "$acct"
+        if [ "$warp_st" != "up" ] || [ "$gost_st" != "up" ]; then
+            readiness="service_down"
+        elif [ "$cli_state" = "connecting" ] || [ "$cli_state" = "disconnected" ]; then
+            readiness="waiting"
+        else
+            readiness="probe_failed"
+        fi
+        printf 'instance-%s port=%s readiness=%s proc(warp=%s,gost=%s) account=%s cli=%s trace=failed endpoint=%s curl_rc=%s error=%s\n' \
+            "$id" "$port" "$readiness" "$warp_st" "$gost_st" "$acct" "$cli_state" "$endpoint" "$curl_rc" "$probe_error"
     fi
 }
 

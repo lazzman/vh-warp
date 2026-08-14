@@ -19,7 +19,7 @@
 - 🩺 **Docker Health Check** — Built-in HEALTHCHECK reports proxy status; recovery is handled by the in-container watchdog
 - 🚅 **GOST Optimized** — UDP proxy, Nagle disabled, 32KB read/write buffers, 120s idle timeout, TCP keepalive (memory-friendly multi-instance defaults)
 - 🧩 **Multi-Instance** — `INSTANCE_COUNT` spawns N isolated WARP+GOST stacks (netns), ports auto-increment
-- ⚖️ **Load Balancer** — Unified port `1110` with round / random / hash / sticky strategies; sticky via `socks5h://{id}@host:1110`
+- ⚖️ **Load Balancer** — Unified port `1110` with round / random / hash / rotate strategies; route by id via `socks5h://{id}@host:1110`
 - 🔄 **Rolling Restart** — When `INSTANCE_COUNT>=4`, hard-restarts instances one by one every 6h; waits for `warp=on` before the next; overlapping rounds are skipped
 - 🌐 **IPv6 Priority** — `PREFER_IPV6=1` makes GOST resolve dual-stack hosts via AAAA first; IPv4-only sites still work
 
@@ -99,7 +99,7 @@ HTTP:    192.168.x.x:1111
 INSTANCE_COUNT=3
 BASE_PORT=1111
 LB_PORT=1110
-LB_STRATEGY=round   # round | random | hash | sticky
+LB_STRATEGY=round   # round | random | hash | rotate
 ```
 
 | Access | Address | Notes |
@@ -109,10 +109,10 @@ LB_STRATEGY=round   # round | random | hash | sticky
 | Instance 1 | `host:1112` | Direct to instance 1 |
 | Instance N | `host:1111+N` | Direct to instance N |
 
-**Sticky session** (same id → same backend):
+**ID 路由**（同一 id → 同一后端）：
 
 ```bash
-# SOCKS5: username is the sticky id (password ignored)
+# SOCKS5: username is the routing id (password ignored)
 socks5h://session-alice@192.168.x.x:1110
 socks5h://42@192.168.x.x:1110
 
@@ -120,7 +120,7 @@ socks5h://42@192.168.x.x:1110
 http://session-alice@192.168.x.x:1110
 ```
 
-When a username/id is present, traffic is always hashed to a fixed backend regardless of `LB_STRATEGY`. Without a username, `round` / `random` / `hash`(by client IP) apply.
+When a username/id is present, traffic uses Rendezvous hashing for a stable backend in `round` / `random` / `hash`. `rotate` ignores the username for backend selection so that every new connection uses the same backend during a time window.
 
 **Data isolation**: each instance stores WARP registration under `/var/lib/cloudflare-warp/instances/<id>/` (single-instance mode still uses the volume root for backward compatibility).
 
@@ -186,11 +186,12 @@ Cloudflare One Client 2026.6 and later requires outbound HTTPS access to `api.de
 When `INSTANCE_COUNT >= 4` (or `ROTATE_RESTART_ENABLED=1`), a daemon hard-restarts instances **one at a time** on a fixed interval (default `6h`):
 
 1. Mark the backend `down` so the load balancer drains it
-2. Full `instance-ctl restart` (netns + warp-svc + gost), **keeping the current WARP registration**
-3. Probe the instance direct port until `warp=on` / `warp=plus` (default 90s)
-4. Only then restart the next instance
-5. A failed instance is retried twice, then skipped; the round continues
-6. If the previous round is still running when the next tick fires, that tick is **dropped** (not queued)
+2. Wait for LB-tracked connections to close (default max `120s`), then continue even on timeout
+3. Full `instance-ctl restart` (netns + warp-svc + gost), **keeping the current WARP registration**
+4. Probe the instance direct port until `warp=on` / `warp=plus` (default 90s)
+5. Only then restart the next instance
+6. A failed instance is retried twice, then skipped; the round continues
+7. If the previous round is still running when the next tick fires, that tick is **dropped** (not queued)
 
 The first round waits one full interval after container start. Health checks skip the instance currently being rotated.
 
@@ -273,15 +274,18 @@ docker run -d \
 | `INSTANCE_COUNT` | `1` | Number of instances (1–32) |
 | `BASE_PORT` | `1111` | Direct port for instance 0 (then +1 each) |
 | `LB_PORT` | `1110` | Load balancer listen port |
-| `LB_STRATEGY` | `round` | `round` / `random` / `hash` / `sticky` |
+| `LB_STRATEGY` | `round` | `round` / `random` / `hash` / `rotate` |
+| `LB_ROTATE_INTERVAL` | `5m` | `rotate` 切换间隔；裸数字按分钟，支持 `5m` / `300s` / `1h` |
 | `LB_ENABLED` | `auto` | `auto` enables LB when count>1; `1`/`0` forces |
 | `HEALTH_CHECK_INTERVAL` | `60` | Health check interval (seconds) |
 | `HEALTH_SOFT_FAILURES` | `3` | Failures before soft reconnect |
 | `HEALTH_FALLBACK_AFTER` | `600` | Seconds before Free fallback |
+| `STATUS_EVENT_LOG` | `1` | 每轮健康检测输出完整状态表到 `docker logs`；本轮变化实例标记 `🔄`，`0` 时仅写入健康检测日志 |
 | `ROTATE_RESTART_ENABLED` | `auto` | `auto` enables when count≥4; `1`/`0` forces |
 | `ROTATE_RESTART_INTERVAL` | `6h` | Whole-round interval (`30m` / `6h` / `12h` / seconds) |
 | `ROTATE_RESTART_PROBE_TIMEOUT` | `90` | Seconds to wait for `warp=on` after each restart |
 | `ROTATE_RESTART_RETRIES` | `2` | Extra hard-restart attempts per instance before skip |
+| `ROTATE_RESTART_DRAIN_TIMEOUT` | `120` | LB 摘流后等待已有连接结束的最长时间；`0` 关闭等待 |
 | `UPSTREAM_SOCKS5` | _(empty)_ | Optional upstream SOCKS5 for WARP dial (`socks5://user:pass@host:port`) |
 | `UPSTREAM_SOCKS5_UDP` | `udp` | `udp` or `tcp`; MASQUE needs real UDP |
 | `UPSTREAM_MTU` | `1280` | TUN MTU for hev-socks5-tunnel |
@@ -360,7 +364,7 @@ docker exec -it vh-warp vhwarp
 - 🩺 **Docker 健康检查** — 内置 HEALTHCHECK 上报代理状态，容器内守护进程负责恢复
 - 🚅 **GOST 优化** — UDP 代理、Nagle 禁用、读写缓冲 32KB、空闲 120s 回收、TCP keepalive（多实例内存友好默认）
 - 🧩 **多实例** — `INSTANCE_COUNT` 启动 N 套隔离的 WARP+GOST（netns），端口自动递增
-- ⚖️ **负载均衡** — 统一入口 `1110`，支持轮询/随机/哈希/粘性；`socks5h://{id}@host:1110` 固定后端
+- ⚖️ **负载均衡** — 统一入口 `1110`，支持逐请求轮询/随机/哈希/粘性/定时统一轮换；`socks5h://{id}@host:1110` 固定后端
 - 🔄 **定时滚动重启** — `INSTANCE_COUNT>=4` 时每 6 小时逐台硬重启；探针 `warp=on` 后才动下一台；叠轮直接忽略
 - 🌐 **IPv6 优先** — `PREFER_IPV6=1` 时 GOST 解析双栈域名优先 AAAA；纯 IPv4 站点仍可访问
 
@@ -440,7 +444,7 @@ HTTP:    192.168.x.x:1111
 INSTANCE_COUNT=3
 BASE_PORT=1111
 LB_PORT=1110
-LB_STRATEGY=round   # round | random | hash | sticky
+LB_STRATEGY=round   # round | random | hash | rotate
 ```
 
 | 访问方式 | 地址 | 说明 |
@@ -461,7 +465,33 @@ socks5h://42@192.168.x.x:1110
 http://session-alice@192.168.x.x:1110
 ```
 
-只要带了用户名/id，就会按 id 哈希固定到后端，与 `LB_STRATEGY` 无关；不带用户名时按 round/random/hash（客户端 IP）调度。
+除 `rotate` 外，只要带了用户名/id，就会按 id 的 **Rendezvous（最高随机权重）哈希**固定到后端，与 `LB_STRATEGY` 无关；不带用户名时按 round/random/hash（客户端 IP）调度。该算法使大量离散 id 在等权实例间趋于均匀，并在实例增减时只迁移必要会话，避免哈希取模造成的大面积重映射。
+
+#### 策略特性表
+
+所有策略只影响通过负载均衡入口建立的**新 TCP 代理连接**；已建立连接不会被中途迁移，直连实例端口不会经过负载均衡。
+
+| 策略 | 未提供用户名/id | 提供用户名/id | 路由依据 | id 数量分布 | 实例增减时的迁移 | 适用场景 |
+|------|----------------|---------------|----------|-------------|------------------|----------|
+| `round`（默认） | 按新连接依次选择下一个健康实例 | 按 id 的 Rendezvous 哈希 | 有 id 按 id；无 id 不保持会话 | 有 id 时趋于均匀；无 id 时新连接数轮询均分 | 有 id 时仅迁移必要 id；无 id 无会话迁移概念 | 通用默认场景 |
+| `random` | 每个新连接随机选择健康实例 | 按 id 的 Rendezvous 哈希 | 有 id 按 id；无 id 不保持会话 | 有 id 时趋于均匀；无 id 大量连接下概率趋于均匀 | 有 id 时仅迁移必要 id；无 id 无会话迁移概念 | 无状态请求的随机分散 |
+| `hash` | 按客户端 IP 的 Rendezvous 哈希 | 按 id 的 Rendezvous 哈希 | 有 id 优先按 id；无 id 按客户端 IP | 大量不同 id/IP 时趋于均匀 | 仅迁移原目标下线或应落到新增实例的 id/IP | 同一来源 IP 或 id 需要稳定出口 |
+| `rotate` | 当前时间窗口内统一走同一个健康实例 | 忽略 id，仍统一走当前窗口实例 | 全局时间窗口 | 不追求同一时刻的实例间均衡；按时间轮换 | 当前目标摘流时故障转移；恢复后当前窗口不回跳 | 所有新请求每 N 分钟统一切换出口 |
+
+**均衡含义**：`round` 均衡的是新连接数量；`random` 均衡的是大量连接的概率分布；`hash` 和带 id 的 `round` / `random` 均衡的是大量离散 id（或 IP）的数量，而不考虑单个 id 的业务流量；`rotate` 刻意让一个时间窗口内的新连接集中到同一实例。
+
+**id 路由优先级**：除 `rotate` 外，只要 SOCKS5 用户名或 HTTP Basic Auth 用户名携带 id，就优先使用 id 的 Rendezvous 哈希。该算法在健康实例集合不变时保持稳定；新增实例时，发生迁移的 id 只会迁移到新增实例；移除实例时，仅原本落在被移除实例上的 id 会迁移。
+
+**滚动重启**：所有策略都使用同一套摘流与排空流程。实例重启前先从 LB 候选中移除，等待该实例已有的 LB 连接自然结束（由 `ROTATE_RESTART_DRAIN_TIMEOUT` 控制，默认 `120` 秒），随后才重启；绕过 LB 的实例直连流量无法被该排空机制统计。
+
+**定时统一轮换**：将策略设置为 `rotate` 后，负载均衡从启动时开始计时，每个时间窗口内所有**新建连接**都固定走同一个健康实例；窗口到期后，所有新建连接统一切到下一个健康实例。默认间隔为 5 分钟：
+
+```bash
+LB_STRATEGY=rotate
+LB_ROTATE_INTERVAL=5m
+```
+
+`LB_ROTATE_INTERVAL` 支持 `5m`、`300s`、`1h` 等时长；不带单位的数字按分钟处理，例如 `5` 等同于 `5m`。已建立的 TCP 连接不会中途迁移或断开，下一次新建连接才会按当前窗口选择后端。`rotate` 为保证同一窗口内统一出口，会忽略 SOCKS5/HTTP 用户名的粘性映射。定时滚动重启只会将正在重启的实例临时摘流：如果它正好是当前轮换目标，才会故障转移到下一个健康实例；实例恢复后不会在当前时间窗口内回跳，轮换计时也不会重置。
 
 **数据隔离**：多实例注册数据位于 `/var/lib/cloudflare-warp/instances/<id>/`（单实例仍使用 volume 根目录，兼容旧数据）。
 
@@ -510,6 +540,41 @@ trace 输出关键字段：
 
 正常判定：`warp=on` 或 `warp=plus`，且代理出口 IP 与本机直连 IP 不同。
 
+### 启动横幅的就绪状态
+
+容器启动时会对所有实例**并行**输出一份真实状态快照，而不是将探测失败统一显示为 `n/a`。示例：
+
+```text
+✅ 实例0  :1111  已就绪  IP=104.28.x.x                              WARP=on   LAX
+⏳ 实例1  :1112  建连中  CLI=connecting
+⚠️  实例2  :1113  直连中  IP=203.0.113.x                             WARP=off
+```
+
+| `readiness` | 含义与处理 |
+|---|---|
+| `ready` | 代理 trace 已确认 `warp=on` 或 `warp=plus`；这是唯一已验证可承载 WARP 流量的状态。 |
+| `waiting` | `warp-svc`/GOST 已启动，但 WARP 尚在连接或未连接；首次注册、多实例并发启动时常见，健康检测会继续重试。 |
+| `direct` | trace 请求成功但 `warp=off`，当前流量未走 WARP；不要将它当作 WARP 出口。 |
+| `probe_failed` | CLI 看起来已连接或无法确认，但两个 trace 端点都失败；查看输出中的 `endpoint`、`curl_rc`、`error` 定位网络、代理或端点问题。 |
+| `service_down` | `warp-svc` 或 GOST 进程未运行，应查看实例日志。 |
+
+启动末尾还会输出汇总。`account` 与 `cli` 来自同一实例私有命名空间中的 `warp-cli`，`trace=ok` 则是经该实例代理完成的实际流量验证。完整机器记录（端点、curl 返回码和原始错误）写入 `entrypoint.log`，也可通过 `instance-ctl status` 查询。
+
+健康检测会继续监控状态。每轮检查完成后会输出一张完整、简短的状态表；状态发生变化的实例会标记为 `🔄`，首次观测标记为 `🆕`，定时滚动重启而跳过检测的实例标记为 `⏸️`。完整机器记录仍保留在健康检测日志中。
+
+```text
+[2026-08-14 15:06:12] 📊 WARP 健康状态第 2 轮（🔄 本轮变化 · 未变化 🆕 首次 ⏸️ 跳过）
+  ·  ✅ 实例0  :1111  已就绪  IP=104.28.x.x                              WARP=on   LAX
+  🔄 ⚠️  实例6  :1117  探测失败  CLI=connected    原因=探测超时
+  汇总：ready=8 waiting=1 direct=0 probe_failed=1 service_down=0 skipped=0
+```
+
+默认 `STATUS_EVENT_LOG=1`，每轮都会输出状态表；若只希望保留文件日志，可设置 `STATUS_EVENT_LOG=0`。
+
+```bash
+docker logs -f vh-warp
+```
+
 ## 💓 心跳检测与自愈
 
 容器内置断线自愈守护进程，后台持续检测 `warp=on`，自动化恢复整条链路：
@@ -532,11 +597,12 @@ Cloudflare One Client 2026.6 及更高版本注册和同步设置需要放行 `a
 当 `INSTANCE_COUNT >= 4`（或 `ROTATE_RESTART_ENABLED=1`）时，守护进程按固定间隔（默认 `6h`）**逐台**硬重启：
 
 1. 将该后端标 `down`，负载均衡先摘流
-2. 完整 `instance-ctl restart`（netns + warp-svc + gost），**保留当前 WARP 注册**
-3. 对实例直连端口探针，直到 `warp=on` / `warp=plus`（默认 90s）
-4. 成功后才重启下一台
-5. 失败则再试 2 次，仍失败就跳过并继续
-6. 上一轮还没跑完就到点，**整轮丢弃**（不排队）
+2. 等待 LB 记录的现有连接自然结束（默认最多 `120s`；超时仍继续）
+3. 完整 `instance-ctl restart`（netns + warp-svc + gost），**保留当前 WARP 注册**
+4. 对实例直连端口探针，直到 `warp=on` / `warp=plus`（默认 90s）
+5. 成功后才重启下一台
+6. 失败则再试 2 次，仍失败就跳过并继续
+7. 上一轮还没跑完就到点，**整轮丢弃**（不排队）
 
 容器启动后，定时滚动重启日志会**同时打到 Docker 控制台**和 `/var/log/warp-gost/rotate-restart.log` 文件（支持滚动截断）。
 
@@ -620,15 +686,18 @@ docker run -d \
 | `INSTANCE_COUNT` | `1` | 实例数量（1–32） |
 | `BASE_PORT` | `1111` | 实例 0 直连端口，其后递增 |
 | `LB_PORT` | `1110` | 负载均衡入口 |
-| `LB_STRATEGY` | `round` | `round` / `random` / `hash` / `sticky` |
+| `LB_STRATEGY` | `round` | `round` / `random` / `hash` / `rotate` |
+| `LB_ROTATE_INTERVAL` | `5m` | `rotate` 切换间隔；裸数字按分钟，支持 `5m` / `300s` / `1h` |
 | `LB_ENABLED` | `auto` | `auto` 在多实例时启用；`1`/`0` 强制 |
 | `HEALTH_CHECK_INTERVAL` | `60` | 健康检测间隔（秒） |
 | `HEALTH_SOFT_FAILURES` | `3` | 触发软重连的连续失败次数 |
 | `HEALTH_FALLBACK_AFTER` | `600` | 回退 Free 的持续失败时间（秒） |
+| `STATUS_EVENT_LOG` | `1` | 每轮健康检测同步输出完整状态表到 `docker logs`；本轮变化实例标记 `🔄`，`0` 仅写入健康检测日志 |
 | `ROTATE_RESTART_ENABLED` | `auto` | `auto` 在实例数≥4 时启用；`1`/`0` 强制 |
 | `ROTATE_RESTART_INTERVAL` | `6h` | 整轮间隔（`30m` / `6h` / `12h` / 纯秒） |
 | `ROTATE_RESTART_PROBE_TIMEOUT` | `90` | 单台重启后等待 `warp=on` 的秒数 |
 | `ROTATE_RESTART_RETRIES` | `2` | 本台失败后的额外硬重启次数 |
+| `ROTATE_RESTART_DRAIN_TIMEOUT` | `120` | LB 摘流后等待已有连接结束的最长时长；`0` 关闭等待 |
 | `UPSTREAM_SOCKS5` | 空 | 可选，WARP 建连走的上游 SOCKS5 |
 | `UPSTREAM_SOCKS5_UDP` | `udp` | `udp` / `tcp`；MASQUE 需要真 UDP |
 | `UPSTREAM_MTU` | `1280` | 上游 TUN MTU |
