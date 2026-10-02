@@ -2,6 +2,15 @@
 
 WARP_LOCK_DIR="${WARP_LOCK_DIR:-/run/lock/vh-warp-registration.lock}"
 
+# warp-cli 在 warp-svc 卡死时会无限挂起。用同名函数遮蔽二进制，
+# 调用点无需改动；内部使用绝对路径避免函数递归。
+WARP_CLI_BIN="${WARP_CLI_BIN:-/usr/bin/warp-cli}"
+WARP_CLI_CMD_TIMEOUT="${WARP_CLI_CMD_TIMEOUT:-60}"
+
+warp-cli() {
+    timeout "${WARP_CLI_CMD_TIMEOUT}s" "$WARP_CLI_BIN" "$@"
+}
+
 warp_cli_ready() {
     warp-cli --accept-tos status > /dev/null 2>&1
 }

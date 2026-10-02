@@ -43,8 +43,13 @@ fi
 
 log "⏳ 正在启动 warp-svc..."
 mkdir -p /run/cloudflare-warp
-warp-svc >> "$LOG_DIR/warp-svc.log" 2>&1 &
-WARP_PID=$!
+
+start_warp_svc() {
+    warp-svc >> "$LOG_DIR/warp-svc.log" 2>&1 &
+    WARP_PID=$!
+}
+
+start_warp_svc
 
 attempt=1
 MAX_ATTEMPTS=5
@@ -60,8 +65,7 @@ while true; do
     fi
     log "⏳ warp-svc 未就绪，第 ${attempt}/${MAX_ATTEMPTS} 次尝试，10 秒后重试..."
     attempt=$((attempt + 1))
-    warp-svc >> "$LOG_DIR/warp-svc.log" 2>&1 &
-    WARP_PID=$!
+    start_warp_svc
 done
 
 log "⏳ 等待 warp-cli 就绪（最长 ${WARP_CLI_TIMEOUT} 秒）..."
@@ -160,4 +164,26 @@ echo ""
 log "✅ 日志监控已启动"
 log "✅ 健康检测已启动"
 
-wait $WARP_PID
+# PID 1 监督循环：warp-svc 崩溃或被健康检测主动重启（内存回收）后自动拉起，
+# 容器不再因为 warp-svc 退出而整体退出。
+log "🛡️ 进入 warp-svc 监督模式"
+svc_restart_delay=5
+while true; do
+    wait "$WARP_PID"
+    rc=$?
+    log "⚠️ warp-svc 已退出 (exit=${rc})，${svc_restart_delay} 秒后自动重启"
+    sleep "$svc_restart_delay"
+    start_warp_svc
+    sleep 15
+    if kill -0 "$WARP_PID" 2>/dev/null; then
+        svc_restart_delay=5
+        if ! wait_for_warp_cli "$WARP_CLI_TIMEOUT"; then
+            log "⚠️ warp-svc 重启后 warp-cli 未就绪"
+        fi
+    else
+        if [ "$svc_restart_delay" -lt 60 ]; then
+            svc_restart_delay=$((svc_restart_delay * 2))
+        fi
+        log "⚠️ warp-svc 启动后立即退出，重启间隔调整为 ${svc_restart_delay} 秒"
+    fi
+done

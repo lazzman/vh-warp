@@ -16,6 +16,7 @@
 - 🎮 **Interactive Menu** — `vhwarp` config tool, full menu-driven, beginner-friendly
 - 🖥️ **Multi-Arch** — amd64 / arm64, works on servers, routers, and Raspberry Pi
 - 📏 **Log Control** — Auto-rotated, keeps latest 3MB, ideal for low-memory environments
+- 🧠 **Memory Guard** — Auto-restarts `warp-svc` / `gost` when RSS exceeds the threshold, with a container memory cap as the final safety net
 - 🩺 **Docker Health Check** — Built-in HEALTHCHECK reports proxy status; recovery is handled by the in-container watchdog
 - 🚅 **GOST Optimized** — UDP proxy, Nagle disabled, 64KB read/write buffers, TCP keepalive, tuned for router scenarios
 ## 🚀 Quick Start
@@ -102,6 +103,8 @@ When proxy checks fail, the watchdog first verifies GOST and tries two independe
 
 If WARP remains unavailable for 10 minutes while direct Internet is healthy, the watchdog falls back to Free to restore service. WARP+/Teams credentials are not stored and are not automatically restored. If Free registration is temporarily unavailable, GOST remains available through the host's direct connection and registration retries use backoff. Traffic may therefore expose the host egress IP during recovery. Set `HEALTH_FALLBACK_AFTER` to adjust the fallback delay.
 
+`warp-svc` and `gost` are long-lived daemons that do not return freed memory. The watchdog recycles them automatically once RSS exceeds `WARP_SVC_RSS_MAX_KB` / `GOST_RSS_MAX_KB` (default 192MB), so a leak can no longer grow the container without bound. `MEM_LIMIT` (default `512m`) is the final safety net. The entrypoint supervises `warp-svc` and restarts it in place if it exits.
+
 Cloudflare One Client 2026.6 and later requires outbound HTTPS access to `api.devices.cloudflare.com` for registration and settings. MASQUE also requires working UDP/HTTP3 connectivity.
 
 ## 🔔 PushDeer Notifications
@@ -116,7 +119,7 @@ Once configured, all disconnect, reconnect, emergency, and recovery events are p
 
 ## 📋 Logs
 
-Logs are stored in `/var/log/warp-gost/`, capped at 3MB per file with auto-rotation:
+Logs are stored in `/var/log/warp-gost/`, bind-mounted to `./logs` next to the compose file, capped at 3MB per file. Rotation truncates files in place instead of replacing them, because `warp-svc` and `gost` hold the file descriptors open — replacing the file would leave the old inode unlinked and grow forever:
 
 | 📄 File | 📝 Content |
 |------|------|
@@ -141,7 +144,7 @@ docker run -d \
   --device=/dev/net/tun \
   -p 1111:1111 \
   --sysctl net.ipv4.conf.all.src_valid_mark=1 \
-  -v warp-data:/var/lib/cloudflare-warp \
+  -v $PWD/warp-data:/var/lib/cloudflare-warp \
   uxiaohan/vh-warp:latest
 ```
 
@@ -183,6 +186,7 @@ docker exec -it vh-warp vhwarp
 - 🎮 **交互菜单** — `vhwarp` 配置工具，全菜单操作，新手友好
 - 🖥️ **多架构适配** — amd64 / arm64，服务器、软路由、树莓派均可运行
 - 📏 **日志可控** — 自动轮转保留最新 3MB，适合低内存环境
+- 🧠 **内存守护** — `warp-svc` / `gost` 内存超过阈值自动重启回收，并提供容器内存硬上限兜底
 - 🩺 **Docker 健康检查** — 内置 HEALTHCHECK 上报代理状态，容器内守护进程负责恢复
 - 🚅 **GOST 优化** — UDP 代理、Nagle 禁用、读写缓冲区 64KB、TCP keepalive，适配软路由场景
 
@@ -270,6 +274,8 @@ HTTP:    192.168.x.x:1111
 
 当 WARP 持续不可用 10 分钟、宿主直连正常且原注册最后重连仍失败时，系统才回退到 Free。WARP+/Teams 凭据不会保存，也不会自动恢复。Free 注册 API 暂时不可用时，GOST 保持宿主直连并使用退避策略重试；恢复期间流量可能暴露服务器真实出口 IP。可通过 `HEALTH_FALLBACK_AFTER` 调整回退时间。
 
+`warp-svc` 与 `gost` 都是长期驻留的守护进程，不会主动归还已释放的内存。心跳检测会在其 RSS 超过 `WARP_SVC_RSS_MAX_KB` / `GOST_RSS_MAX_KB`（默认 192MB）时自动重启进程回收内存，使泄漏无法无限增长；`MEM_LIMIT`（默认 `512m`）是最后的硬上限兜底。entrypoint 会监督 `warp-svc`，进程退出后就地拉起，容器不再整体重启。
+
 Cloudflare One Client 2026.6 及更高版本注册和同步设置需要放行 `api.devices.cloudflare.com` 的出站 HTTPS；MASQUE 还要求 UDP/HTTP3 网络可用。
 
 ## 🔔 PushDeer 通知
@@ -284,7 +290,7 @@ Cloudflare One Client 2026.6 及更高版本注册和同步设置需要放行 `a
 
 ## 📋 日志
 
-日志保存在 `/var/log/warp-gost/`，单文件上限 3MB 自动截断：
+日志保存在 `/var/log/warp-gost/`，通过绑定挂载映射到 compose 文件旁的 `./logs` 目录，单文件上限 3MB。轮转采用**就地截断**而非替换文件：`warp-svc` 与 `gost` 长期持有日志 fd，若用 `mv` 替换文件会导致旧 inode 被 unlink、空间永不回收而无限增长：
 
 | 📄 文件 | 📝 内容 |
 |------|------|
@@ -310,7 +316,7 @@ docker run -d \
   --device=/dev/net/tun \
   -p 1111:1111 \
   --sysctl net.ipv4.conf.all.src_valid_mark=1 \
-  -v warp-data:/var/lib/cloudflare-warp \
+  -v $PWD/warp-data:/var/lib/cloudflare-warp \
   uxiaohan/vh-warp:latest
 ```
 

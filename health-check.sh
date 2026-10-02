@@ -11,6 +11,10 @@ HEALTH_FALLBACK_AFTER="${HEALTH_FALLBACK_AFTER:-600}"
 HEALTH_PROBE_TIMEOUT="${HEALTH_PROBE_TIMEOUT:-8}"
 WARP_REGISTRATION_TIMEOUT="${WARP_REGISTRATION_TIMEOUT:-60}"
 WARP_CONNECT_TIMEOUT="${WARP_CONNECT_TIMEOUT:-180}"
+# 内存回收阈值（KB）。warp-svc / gost 运行久了不会归还内存，
+# 超过阈值即主动重启进程回收，避免最终 OOM。
+WARP_SVC_RSS_MAX_KB="${WARP_SVC_RSS_MAX_KB:-196608}"
+GOST_RSS_MAX_KB="${GOST_RSS_MAX_KB:-196608}"
 
 source /usr/local/bin/warp-common.sh
 mkdir -p /var/log/warp-gost
@@ -78,6 +82,43 @@ restart_gost() {
     log "🔧 GOST 不可用，尝试重启"
     /usr/local/bin/gost-setup.sh restart >> "$LOG_FILE" 2>&1
     check_gost
+}
+
+rss_kb() {
+    local pid
+    pid=$(pgrep -x "$1" 2>/dev/null | head -1)
+    [ -n "$pid" ] || { echo 0; return; }
+    awk '/^VmRSS:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null
+}
+
+recycle_warp_svc() {
+    local rss="$1"
+    log "🧠 warp-svc 占用 $((rss / 1024))MB，超过阈值 $((WARP_SVC_RSS_MAX_KB / 1024))MB，重启以回收内存"
+
+    if ! acquire_warp_lock 5; then
+        log "⏸️ 用户配置正在进行，跳过本次内存回收"
+        return 1
+    fi
+
+    pushdeer_send "WARP 服务内存回收" "warp-svc 占用 $((rss / 1024))MB，超过阈值，已触发自动重启回收内存。"
+    warp-cli --accept-tos disconnect >> "$LOG_FILE" 2>&1 || true
+    pkill -x warp-svc 2>/dev/null || true
+    sleep 2
+    if pgrep -x warp-svc > /dev/null 2>&1; then
+        pkill -9 -x warp-svc 2>/dev/null || true
+        sleep 2
+    fi
+
+    # entrypoint 的监督循环会自动重新拉起 warp-svc 并等待 cli 就绪
+    if ! wait_for_warp_cli 60; then
+        log "⚠️ warp-svc 重启后 warp-cli 未就绪，等待下一轮检测"
+        release_warp_lock
+        return 1
+    fi
+
+    connect_current_registration 60 || true
+    release_warp_lock
+    return 0
 }
 
 probe_proxy_url() {
@@ -265,10 +306,22 @@ retry_free_until_healthy() {
 }
 
 monitor_loop() {
-    local count elapsed fallback_rc
+    local count elapsed fallback_rc rss
     log "💚 健康检测启动: interval=${HEALTH_CHECK_INTERVAL}s soft=${HEALTH_SOFT_FAILURES} fallback=${HEALTH_FALLBACK_AFTER}s"
 
     while true; do
+        # 内存回收：进程长期运行不归还内存时主动重启，避免容器被 OOM 杀掉
+        rss=$(rss_kb gost)
+        if [ "${rss:-0}" -ge "$GOST_RSS_MAX_KB" ]; then
+            log "🧠 gost 占用 $((rss / 1024))MB，超过阈值 $((GOST_RSS_MAX_KB / 1024))MB，重启以回收内存"
+            restart_gost || log "⚠️ GOST 内存回收重启失败"
+        fi
+
+        rss=$(rss_kb warp-svc)
+        if [ "${rss:-0}" -ge "$WARP_SVC_RSS_MAX_KB" ]; then
+            recycle_warp_svc "$rss" || true
+        fi
+
         if ! check_gost; then
             restart_gost || log "⚠️ GOST 重启失败"
         fi

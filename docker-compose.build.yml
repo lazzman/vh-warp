@@ -19,8 +19,17 @@ services:
       HEALTH_CHECK_INTERVAL: ${HEALTH_CHECK_INTERVAL:-60}
       HEALTH_SOFT_FAILURES: ${HEALTH_SOFT_FAILURES:-3}
       HEALTH_FALLBACK_AFTER: ${HEALTH_FALLBACK_AFTER:-600}
+      WARP_SVC_RSS_MAX_KB: ${WARP_SVC_RSS_MAX_KB:-196608}
+      GOST_RSS_MAX_KB: ${GOST_RSS_MAX_KB:-196608}
+    # 兜底硬上限：守护进程泄漏失控时也不会拖垮宿主机
+    mem_limit: ${MEM_LIMIT:-512m}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
-      - warp-data:/var/lib/cloudflare-warp
-
-volumes:
-  warp-data:
+      # WARP 注册凭据落到宿主 ./warp-data
+      - ./warp-data:/var/lib/cloudflare-warp
+      # 日志落到宿主 ./logs，方便直接查看，也不占用容器可写层
+      - ./logs:/var/log/warp-gost

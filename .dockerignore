@@ -5,5 +5,7 @@
 .env
 .env.example
 .headroom
+warp-data
+logs
 *.md
 docker-compose.*
